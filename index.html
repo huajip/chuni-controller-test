@@ -133,9 +133,18 @@
         <button id="connect-hinata-reader" class="action" data-i18n="action.connectHinataReader">Connect Hinata HID Reader Mode</button>
         <button id="connect-hinata-usb-reader" class="action" data-i18n="action.connectHinataUsbReader">Connect Hinata WebUSB Reader Mode</button>
         <button id="probe-aime-reader" class="action" data-i18n="action.probeAimeReader">Run Reader Probe</button>
+        <button id="scan-aime-reader" class="action" data-i18n="action.scanAimeReader">10s Reader Scan</button>
         <button id="poll-aime-reader" class="action" data-i18n="action.pollAimeReader">Poll Card Once</button>
         <button id="disconnect-aime-reader" class="action ghost" data-i18n="action.disconnectAimeReader">Disconnect Reader COM</button>
         <button id="clear-aime-reader-log" class="action ghost" data-i18n="action.clearAimeReaderLog">Clear Reader Log</button>
+      </div>
+      <div class="reader-led-controls">
+        <label class="light-control">
+          <span data-i18n="aime.readerLedColor">Reader LED Color</span>
+          <input id="aime-reader-led-color" type="color" value="#ffffff">
+        </label>
+        <button id="flash-aime-reader-led" class="action" data-i18n="action.flashAimeReaderLed">Flash White 10s</button>
+        <button id="send-aime-reader-led" class="action" data-i18n="action.sendAimeReaderLed">Send Reader LED</button>
       </div>
       <pre id="aime-reader-log" class="raw-state" data-i18n="aime.noPackets">No reader packets yet.</pre>
     </section>

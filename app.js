@@ -29,6 +29,9 @@ const TOUCH_COM_EMPTY_PACKET_HOLD_MS = 5000;
 const TOUCH_THRESHOLD_STORAGE_KEY = "controller-test-touch-threshold";
 const LANGUAGE_STORAGE_KEY = "controller-test-language";
 const AIME_READER_DEFAULT_BAUD = 115200;
+const AIME_READER_SCAN_DURATION_MS = 10000;
+const AIME_READER_SCAN_POLL_INTERVAL_MS = 500;
+const AIME_READER_LED_BLINK_MS = 280;
 const SG_SYNC = 0xe0;
 const SG_ESCAPE = 0xd0;
 const SG_NFC_ADDR = 0x00;
@@ -45,6 +48,7 @@ const SG_CMD_MIFARE_SET_KEY_B = 0x54;
 const SG_CMD_MIFARE_AUTHENTICATE_B = 0x55;
 const SG_CMD_RESET = 0x62;
 const SG_CMD_FELICA_ENCAP = 0x71;
+const SG_LED_CMD_SET_COLOR = 0x81;
 const SG_LED_CMD_RESET = 0xf5;
 const SG_LED_CMD_GET_INFO = 0xf0;
 const HINATA_VENDOR_ID = 0xf822;
@@ -168,6 +172,7 @@ const ui = {
   touchComStatus: document.querySelector("#touch-com-status"),
   aimeReaderStatus: document.querySelector("#aime-reader-status"),
   aimeReaderBaud: document.querySelector("#aime-reader-baud"),
+  aimeReaderLedColor: document.querySelector("#aime-reader-led-color"),
   aimeReaderFw: document.querySelector("#aime-reader-fw"),
   aimeReaderHw: document.querySelector("#aime-reader-hw"),
   aimeCardType: document.querySelector("#aime-card-type"),
@@ -1450,6 +1455,17 @@ class AimeReaderSerialAdapter {
     return this.commandQueue;
   }
 
+  async sendCommandNoResponse(addr, cmd, payload = [], options = {}) {
+    if (!this.connected || !this.writer) {
+      throw new Error(t("aime.error.notConnected"));
+    }
+
+    this.commandQueue = this.commandQueue
+      .catch(() => {})
+      .then(() => this.sendCommandNoResponseNow(addr, cmd, payload, options));
+    return this.commandQueue;
+  }
+
   async sendCommandNow(addr, cmd, payload = [], timeoutMs = 1200) {
     const data = Array.from(payload);
     const seq = this.seq;
@@ -1484,6 +1500,18 @@ class AimeReaderSerialAdapter {
       throw error;
     }
     return responsePromise;
+  }
+
+  async sendCommandNoResponseNow(addr, cmd, payload = [], options = {}) {
+    const data = Array.from(payload);
+    const seq = this.seq;
+    this.seq = (this.seq + 1) & 0xff;
+    const frame = [5 + data.length, addr, seq, cmd, data.length, ...data];
+    const encoded = encodeSgFrame(frame);
+    if (!options.silent) {
+      appendAimeReaderLog(`TX ${describeSgRequest({ addr, seq, cmd, payload: data })}`);
+    }
+    await this.writeBytes(encoded);
   }
 
   async writeBytes(bytes) {
@@ -1535,6 +1563,7 @@ class AimeReaderSerialAdapter {
 
     const fw = await this.sendCommand(SG_NFC_ADDR, SG_CMD_GET_FW_VERSION);
     this.protocol = "sega";
+    await this.setReaderLed([0x00, 0x00, 0x40], "probe");
     ui.aimeReaderFw.textContent = decodeReaderVersion(fw.payload);
 
     const hw = await this.sendCommand(SG_NFC_ADDR, SG_CMD_GET_HW_VERSION);
@@ -1546,6 +1575,7 @@ class AimeReaderSerialAdapter {
     await this.sendCommand(SG_NFC_ADDR, SG_CMD_MIFARE_SET_KEY_B, asciiBytes("WCCFv2"), 1500).catch(() => {});
     await this.sendCommand(SG_NFC_ADDR, SG_CMD_MIFARE_SET_KEY_A, [0x60, 0x90, 0xd0, 0x06, 0x32, 0xf5], 1500).catch(() => {});
 
+    await this.setReaderLed([0x00, 0x40, 0x00], "ready");
     setAimeReaderStatusKey("aime.status.probeOk");
   }
 
@@ -1554,65 +1584,168 @@ class AimeReaderSerialAdapter {
     if (payload.length < 4) {
       throw new Error(t("aime.error.pn532ShortFirmware"));
     }
-    ui.aimeReaderFw.textContent = `PN532 IC=${hexByte(payload[0])} FW=${payload[1]}.${payload[2]} support=${hexByte(payload[3])}`;
-    ui.aimeReaderHw.textContent = "Direct PN532";
+    ui.aimeReaderFw.textContent = t("aime.pn532Firmware", {
+      ic: hexByte(payload[0]),
+      major: payload[1],
+      minor: payload[2],
+      support: hexByte(payload[3]),
+    });
+    ui.aimeReaderHw.textContent = t("aime.reader.directPn532");
     this.protocol = "pn532";
     setAimeReaderStatusKey("aime.status.probeOk");
   }
 
-  async pollCardOnce() {
+  async pollCardOnce(options = {}) {
+    const { manageLed = true, throwOnNoCard = false, throwOnReadError = false } = options;
     if (this.protocol === "pn532") {
-      await this.pollDirectPn532CardOnce();
-      return;
+      return this.pollDirectPn532CardOnce();
     }
 
     setAimeReaderStatusKey("aime.status.polling");
+    if (manageLed) {
+      await this.setReaderLed([0x40, 0x20, 0x00], "polling");
+    }
     const response = await this.sendCommand(SG_NFC_ADDR, SG_CMD_POLL, [], 1800);
     const parsed = parseSgPollPayload(response.payload);
     if (!parsed) {
       ui.aimeCardType.textContent = "-";
       ui.aimeCardValue.textContent = "-";
+      if (manageLed) {
+        await this.setReaderLed([0x20, 0x10, 0x00], "no-card");
+      }
       setAimeReaderStatusKey("aime.status.noCard");
-      return;
+      if (throwOnNoCard) {
+        throw new Error(t("aime.error.noCardDuringScan"));
+      }
+      return false;
     }
 
     if (parsed.type === "mifare") {
-      ui.aimeCardType.textContent = "MIFARE";
+      ui.aimeCardType.textContent = t("aime.card.mifare");
       ui.aimeCardValue.textContent = formatHex(parsed.uid);
       await this.readMifareDetails(parsed.uid);
+      if (manageLed) {
+        await this.setReaderLed([0x00, 0x40, 0x00], "card");
+      }
       setAimeReaderStatusKey("aime.status.cardFound");
-      return;
+      return true;
     }
 
     const cardInfo = describeFelicaCard(parsed.idm, parsed.pmm);
-    ui.aimeCardType.textContent = `FeliCa / ${cardInfo.label}`;
+    ui.aimeCardType.textContent = t("aime.card.felicaModel", { model: cardInfo.label });
     ui.aimeCardValue.textContent = `IDm ${formatHex(parsed.idm)} / PMm ${formatHex(parsed.pmm)}`;
-    appendAimeReaderLog(`FeliCa card ${cardInfo.valid ? "valid" : "unsupported"}: ${cardInfo.reason}`);
-    await this.readFelicaSpad0(parsed.idm, parsed.pmm, cardInfo);
+    appendAimeReaderLog(t(cardInfo.valid ? "aime.log.felicaValid" : "aime.log.felicaUnsupported", {
+      reason: cardInfo.reason,
+    }));
+    await this.readFelicaSpad0(parsed.idm, parsed.pmm, cardInfo, { throwOnError: throwOnReadError });
+    if (manageLed) {
+      await this.setReaderLed([0x00, 0x40, 0x00], "card");
+    }
     setAimeReaderStatusKey("aime.status.cardFound");
+    return true;
   }
 
-  async readFelicaSpad0(idm, pmm, cardInfo = describeFelicaCard(idm, pmm)) {
+  async runTimedReaderScan() {
+    if (this.protocol !== "sega") {
+      throw new Error(t("aime.error.readerLedRequiresSega"));
+    }
+
+    setAimeReaderStatusKey("aime.status.scanning");
+    clearAimeCardDisplay();
+    appendAimeReaderLog(t("aime.log.scanStarted", { seconds: AIME_READER_SCAN_DURATION_MS / 1000 }));
+
+    const deadline = Date.now() + AIME_READER_SCAN_DURATION_MS;
+    while (Date.now() < deadline) {
+      try {
+        await this.setReaderLed([0xff, 0xff, 0xff], "scan", { silent: true });
+        if (await this.pollCardOnce({ manageLed: false, throwOnReadError: true })) {
+          await this.setReaderLed([0x00, 0x00, 0xff], "scan-ok", { silent: true });
+          appendAimeReaderLog(t("aime.log.scanCardFound"));
+          setAimeReaderStatusKey("aime.status.cardFound");
+          return true;
+        }
+        await this.setReaderLed([0x00, 0x00, 0x00], "scan", { silent: true });
+      } catch (error) {
+        await this.setReaderLed([0xff, 0x00, 0x00], "scan-error", { silent: true });
+        throw error;
+      }
+      await sleep(AIME_READER_SCAN_POLL_INTERVAL_MS);
+    }
+
+    await this.setReaderLed([0xff, 0x00, 0x00], "scan-timeout", { silent: true });
+    setAimeReaderStatusKey("aime.status.noCard");
+    appendAimeReaderLog(t("aime.log.scanTimedOut"));
+    return false;
+  }
+
+  async flashReaderLedWhite(durationMs = AIME_READER_SCAN_DURATION_MS) {
+    if (this.protocol !== "sega") {
+      throw new Error(t("aime.error.readerLedRequiresSega"));
+    }
+
+    appendAimeReaderLog(t("aime.log.readerLedFlashStarted", { seconds: durationMs / 1000 }));
+    const deadline = Date.now() + durationMs;
+    let blinkOn = false;
+    while (Date.now() < deadline) {
+      blinkOn = !blinkOn;
+      await this.setReaderLed(blinkOn ? [0xff, 0xff, 0xff] : [0x00, 0x00, 0x00], "flash", { silent: true });
+      await sleep(AIME_READER_LED_BLINK_MS);
+    }
+    await this.setReaderLed([0x00, 0x00, 0x00], "off", { silent: true });
+  }
+
+  async setReaderLed(rgb, reason, options = {}) {
+    if (this.protocol !== "sega") {
+      return;
+    }
+
     try {
-      const response = await this.sendCommand(
-        SG_NFC_ADDR,
-        SG_CMD_FELICA_ENCAP,
-        buildFelicaEncapPayload(idm, buildFelicaReadWithoutEncryption(idm, FELICA_LITES_READ_ONLY_SERVICE, 0)),
-        1800,
+      await this.sendCommandNoResponse(SG_LED_ADDR, SG_LED_CMD_SET_COLOR, rgb, { silent: options.silent });
+      if (!options.silent) {
+        appendAimeReaderLog(t("aime.log.readerLed", { reason: t(`aime.readerLed.${reason}`), rgb: formatHex(rgb) }));
+      }
+    } catch (error) {
+      appendAimeReaderLog(t("aime.log.readerLedFailed", { message: error.message || String(error) }));
+    }
+  }
+
+  async readFelicaSpad0(idm, pmm, cardInfo = describeFelicaCard(idm, pmm), options = {}) {
+    try {
+      const response = await this.sendFelicaEncapWithRetry(
+        idm,
+        buildFelicaReadWithoutEncryption(idm, FELICA_LITES_READ_ONLY_SERVICE, 0),
       );
       const spad0 = parseFelicaReadWithoutEncryptionResponse(response.payload, idm);
       const accessCode = extractValidatedAccessCode(spad0);
-      appendAimeReaderLog(`FeliCa SPAD0 service=0x000b block=0 data=${formatHex(spad0)}`);
+      appendAimeReaderLog(t("aime.log.felicaSpad0", { service: "0x000b", block: 0, hex: formatHex(spad0) }));
       if (accessCode) {
-        ui.aimeCardType.textContent = `FeliCa / ${cardInfo.label} / Access Code`;
+        ui.aimeCardType.textContent = t("aime.card.felicaAccessCode", { model: cardInfo.label });
         ui.aimeCardValue.textContent = accessCode;
       } else {
-        ui.aimeCardType.textContent = `FeliCa / ${cardInfo.label} / SPAD0`;
+        ui.aimeCardType.textContent = t("aime.card.felicaSpad0", { model: cardInfo.label });
         ui.aimeCardValue.textContent = `IDm ${formatHex(idm)} / SPAD0 ${formatHex(spad0)}`;
-        appendAimeReaderLog("FeliCa SPAD0 did not contain a valid 20-digit BCD access code candidate");
+        appendAimeReaderLog(t("aime.log.felicaSpad0NoAccessCode"));
       }
     } catch (error) {
-      appendAimeReaderLog(`FeliCa SPAD0 read failed: ${error.message || String(error)}`);
+      appendAimeReaderLog(t("aime.log.felicaSpad0Failed", { message: error.message || String(error) }));
+      if (options.throwOnError) {
+        throw error;
+      }
+    }
+  }
+
+  async sendFelicaEncapWithRetry(idm, felicaFrame) {
+    const payload = buildFelicaEncapPayload(idm, felicaFrame);
+    try {
+      return await this.sendCommand(SG_NFC_ADDR, SG_CMD_FELICA_ENCAP, payload, 2200);
+    } catch (firstError) {
+      appendAimeReaderLog(t("aime.log.felicaEncapRetry", { message: firstError.message || String(firstError) }));
+      await this.sendCommand(SG_NFC_ADDR, SG_CMD_RADIO_ON, [0x03], 1500).catch(() => {});
+      try {
+        return await this.sendCommand(SG_NFC_ADDR, SG_CMD_FELICA_ENCAP, payload, 4500);
+      } catch (secondError) {
+        throw new Error(t("aime.error.felicaEncapTimeout", { message: secondError.message || String(secondError) }));
+      }
     }
   }
 
@@ -1626,27 +1759,29 @@ class AimeReaderSerialAdapter {
     );
     const parsed = parsePn532FelicaTarget(poll);
     if (!parsed) {
-      throw new Error(`PN532 FeliCa target not found: ${formatHex(poll) || "-"}`);
+      throw new Error(t("aime.error.pn532FelicaTargetNotFound", { hex: formatHex(poll) || "-" }));
     }
 
     const cardInfo = describeFelicaCard(parsed.idm, parsed.pmm);
-    appendAimeReaderLog(`PN532 FeliCa card ${cardInfo.valid ? "valid" : "unsupported"}: ${cardInfo.reason}`);
-    ui.aimeCardType.textContent = `FeliCa / ${cardInfo.label}`;
+    appendAimeReaderLog(t(cardInfo.valid ? "aime.log.pn532FelicaValid" : "aime.log.pn532FelicaUnsupported", {
+      reason: cardInfo.reason,
+    }));
+    ui.aimeCardType.textContent = t("aime.card.felicaModel", { model: cardInfo.label });
     ui.aimeCardValue.textContent = `IDm ${formatHex(parsed.idm)} / PMm ${formatHex(parsed.pmm)}`;
 
     const inner = buildFelicaReadWithoutEncryption(parsed.idm, FELICA_LITES_READ_ONLY_SERVICE, 0);
     const dataExchange = await this.sendPn532Command(PN532_CMD_IN_DATA_EXCHANGE, [parsed.target, ...inner], 2200);
     if (dataExchange[0] !== 0) {
-      throw new Error(`PN532 data exchange status ${hexByte(dataExchange[0] ?? 0)}`);
+      throw new Error(t("aime.error.pn532DataExchangeStatus", { status: hexByte(dataExchange[0] ?? 0) }));
     }
     const spad0 = parseFelicaReadWithoutEncryptionResponse(dataExchange.slice(1), parsed.idm);
     const accessCode = extractValidatedAccessCode(spad0);
-    appendAimeReaderLog(`PN532 FeliCa SPAD0 service=0x000b block=0 data=${formatHex(spad0)}`);
+    appendAimeReaderLog(t("aime.log.pn532FelicaSpad0", { service: "0x000b", block: 0, hex: formatHex(spad0) }));
     if (accessCode) {
-      ui.aimeCardType.textContent = `FeliCa / ${cardInfo.label} / Access Code`;
+      ui.aimeCardType.textContent = t("aime.card.felicaAccessCode", { model: cardInfo.label });
       ui.aimeCardValue.textContent = accessCode;
     } else {
-      ui.aimeCardType.textContent = `FeliCa / ${cardInfo.label} / SPAD0`;
+      ui.aimeCardType.textContent = t("aime.card.felicaSpad0", { model: cardInfo.label });
       ui.aimeCardValue.textContent = `IDm ${formatHex(parsed.idm)} / SPAD0 ${formatHex(spad0)}`;
     }
     setAimeReaderStatusKey("aime.status.cardFound");
@@ -1655,7 +1790,7 @@ class AimeReaderSerialAdapter {
   async readMifareDetails(uid) {
     const authenticated = await this.authenticateMifareSector(uid, 0);
     if (!authenticated) {
-      appendAimeReaderLog("MIFARE auth failed for sector 0");
+      appendAimeReaderLog(t("aime.log.mifareSectorAuthFailed", { sector: 0 }));
       return;
     }
 
@@ -1679,7 +1814,7 @@ class AimeReaderSerialAdapter {
     const accessBytes = blocks[2]?.slice(6, 16);
     if (accessBytes?.length === 10) {
       const accessCode = bcdBytesToText(accessBytes);
-      ui.aimeCardType.textContent = "MIFARE / Aime";
+      ui.aimeCardType.textContent = t("aime.card.mifareAime");
       ui.aimeCardValue.textContent = accessCode || formatHex(accessBytes);
     }
   }
@@ -1690,19 +1825,19 @@ class AimeReaderSerialAdapter {
         setKeyCommand: SG_CMD_MIFARE_SET_KEY_B,
         authCommand: SG_CMD_MIFARE_AUTHENTICATE_B,
         key: asciiBytes("WCCFv2"),
-        label: "WCCFv2 Key B",
+        labelKey: "aime.mifareKey.wccfv2B",
       },
       {
         setKeyCommand: SG_CMD_MIFARE_SET_KEY_A,
         authCommand: SG_CMD_MIFARE_AUTHENTICATE_A,
         key: [0x60, 0x90, 0xd0, 0x06, 0x32, 0xf5],
-        label: "Banapass Key A",
+        labelKey: "aime.mifareKey.banapassA",
       },
       {
         setKeyCommand: SG_CMD_MIFARE_SET_KEY_A,
         authCommand: SG_CMD_MIFARE_AUTHENTICATE_A,
         key: [0xff, 0xff, 0xff, 0xff, 0xff, 0xff],
-        label: "Default Key A",
+        labelKey: "aime.mifareKey.defaultA",
       },
     ];
 
@@ -1711,10 +1846,13 @@ class AimeReaderSerialAdapter {
         await this.sendCommand(SG_NFC_ADDR, attempt.setKeyCommand, attempt.key, 1500);
         await this.sendCommand(SG_NFC_ADDR, SG_CMD_MIFARE_SELECT_TAG, uid, 1500);
         await this.sendCommand(SG_NFC_ADDR, attempt.authCommand, [...uid, blockNo], 1500);
-        appendAimeReaderLog(`MIFARE auth OK: ${attempt.label}`);
+        appendAimeReaderLog(t("aime.log.mifareAuthOk", { key: t(attempt.labelKey) }));
         return true;
       } catch (error) {
-        appendAimeReaderLog(`MIFARE auth failed: ${attempt.label} (${error.message || String(error)})`);
+        appendAimeReaderLog(t("aime.log.mifareAuthFailed", {
+          key: t(attempt.labelKey),
+          message: error.message || String(error),
+        }));
       }
     }
 
@@ -2877,6 +3015,10 @@ function arraysEqual(left, right) {
   return left.every((value, index) => value === right[index]);
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 function decodeReaderVersion(bytes) {
   if (!bytes?.length) {
     return "-";
@@ -2947,27 +3089,27 @@ function buildFelicaReadWithoutEncryption(idm, serviceCode, blockNo) {
 
 function parseFelicaReadWithoutEncryptionResponse(payload, expectedIdm) {
   if (!payload?.length) {
-    throw new Error("empty FeliCa response");
+    throw new Error(t("aime.error.felicaEmptyResponse"));
   }
 
   const length = payload[0];
   const frame = payload.slice(0, length || payload.length);
   if (frame.length < 13) {
-    throw new Error("short FeliCa response");
+    throw new Error(t("aime.error.felicaShortResponse"));
   }
   if (frame[1] !== FELICA_CMD_READ_WITHOUT_ENCRYPTION_RESPONSE) {
-    throw new Error(`unexpected FeliCa response ${hexByte(frame[1])}`);
+    throw new Error(t("aime.error.felicaUnexpectedResponse", { command: hexByte(frame[1]) }));
   }
   if (!arraysEqual(frame.slice(2, 10), expectedIdm)) {
-    throw new Error("FeliCa IDm mismatch");
+    throw new Error(t("aime.error.felicaIdmMismatch"));
   }
   if (frame[10] !== 0 || frame[11] !== 0) {
-    throw new Error(`FeliCa status ${formatHex(frame.slice(10, 12))}`);
+    throw new Error(t("aime.error.felicaStatus", { status: formatHex(frame.slice(10, 12)) }));
   }
 
   const blockCount = frame[12];
   if (blockCount < 1 || frame.length < 13 + 16 * blockCount) {
-    throw new Error("FeliCa block data truncated");
+    throw new Error(t("aime.error.felicaBlockTruncated"));
   }
 
   return frame.slice(13, 29);
@@ -2980,8 +3122,12 @@ function describeFelicaCard(idm, pmm) {
   const valid = manufacturerOk && AICC_FELICA_SUPPORTED_OS_VERSIONS.has(osVersion);
   const label = osLabel || `OS ${hexByte(osVersion ?? 0)}`;
   const reason = [
-    manufacturerOk ? "AICC manufacturer 01:2e" : `non-AICC manufacturer ${formatHex(idm?.slice(0, 2) ?? [])}`,
-    osLabel ? `PMm OS ${hexByte(osVersion)} ${osLabel}` : `unsupported PMm OS ${hexByte(osVersion ?? 0)}`,
+    manufacturerOk
+      ? t("aime.felica.reason.aiccManufacturer")
+      : t("aime.felica.reason.nonAiccManufacturer", { manufacturer: formatHex(idm?.slice(0, 2) ?? []) }),
+    osLabel
+      ? t("aime.felica.reason.pmmOs", { os: hexByte(osVersion), model: osLabel })
+      : t("aime.felica.reason.unsupportedPmmOs", { os: hexByte(osVersion ?? 0) }),
   ].join(", ");
 
   return { valid, label, reason };
@@ -2991,32 +3137,32 @@ function felicaOsVersionLabel(osVersion) {
   switch (osVersion) {
     case 0x06:
     case 0x07:
-      return "Mobile FeliCa v1";
+      return t("aime.felica.model.mobileV1");
     case 0x10:
     case 0x12:
     case 0x13:
-      return "Mobile FeliCa v2";
+      return t("aime.felica.model.mobileV2");
     case 0x14:
     case 0x15:
-      return "Mobile FeliCa v3";
+      return t("aime.felica.model.mobileV3");
     case 0x17:
-      return "Mobile FeliCa v4";
+      return t("aime.felica.model.mobileV4");
     case 0x18:
-      return "Mobile FeliCa v4.1";
+      return t("aime.felica.model.mobileV41");
     case 0x20:
-      return "FeliCa STD RC-S962";
+      return t("aime.felica.model.stdRcS962");
     case 0xf0:
-      return "FeliCa Lite RC-S965";
+      return t("aime.felica.model.liteRcS965");
     case 0xf1:
-      return "FeliCa Lite-S RC-S966";
+      return t("aime.felica.model.liteSRcS966");
     case 0xf2:
-      return "FeliCa Link Lite-S RC-S967";
+      return t("aime.felica.model.linkLiteSRcS967");
     case 0xf3:
     case 0xf4:
     case 0xf5:
     case 0xf6:
     case 0xf7:
-      return "Unknown AICC FeliCa";
+      return t("aime.felica.model.unknownAicc");
     default:
       return "";
   }
@@ -3655,6 +3801,13 @@ function hexToRgb(hex) {
   };
 }
 
+function hexToReaderRgb(hex) {
+  const color = hexToRgb(hex);
+  return [color.r, color.g, color.b].map((value) =>
+    Number.isFinite(value) ? Math.max(0, Math.min(255, value)) : 0
+  );
+}
+
 function cloneColor(color) {
   return { r: color.r, g: color.g, b: color.b };
 }
@@ -3932,6 +4085,38 @@ async function pollAimeReaderOnce() {
   }
 }
 
+async function scanAimeReaderTimed() {
+  try {
+    const adapter = await ensureAimeReaderConnected();
+    await adapter.runTimedReaderScan();
+  } catch (error) {
+    await aimeReaderAdapter?.setReaderLed?.([0xff, 0x00, 0x00], "scan-error", { silent: true }).catch(() => {});
+    setAimeReaderStatus(`Reader COM: ${error.message || String(error)}`, true);
+    appendAimeReaderLog(t("aime.log.error", { message: error.message || String(error) }));
+  }
+}
+
+async function flashAimeReaderLed() {
+  try {
+    const adapter = await ensureAimeReaderConnected();
+    await adapter.flashReaderLedWhite();
+  } catch (error) {
+    setAimeReaderStatus(`Reader COM: ${error.message || String(error)}`, true);
+    appendAimeReaderLog(t("aime.log.error", { message: error.message || String(error) }));
+  }
+}
+
+async function sendAimeReaderLedColor() {
+  try {
+    const adapter = await ensureAimeReaderConnected();
+    const rgb = hexToReaderRgb(ui.aimeReaderLedColor?.value || "#ffffff");
+    await adapter.setReaderLed(rgb, "manual");
+  } catch (error) {
+    setAimeReaderStatus(`Reader COM: ${error.message || String(error)}`, true);
+    appendAimeReaderLog(t("aime.log.error", { message: error.message || String(error) }));
+  }
+}
+
 async function connectWith(factory) {
   try {
     if (currentAdapter) {
@@ -4125,8 +4310,20 @@ function bindActions() {
     runAimeReaderProbe();
   });
 
+  document.querySelector("#scan-aime-reader").addEventListener("click", () => {
+    scanAimeReaderTimed();
+  });
+
   document.querySelector("#poll-aime-reader").addEventListener("click", () => {
     pollAimeReaderOnce();
+  });
+
+  document.querySelector("#flash-aime-reader-led").addEventListener("click", () => {
+    flashAimeReaderLed();
+  });
+
+  document.querySelector("#send-aime-reader-led").addEventListener("click", () => {
+    sendAimeReaderLedColor();
   });
 
   document.querySelector("#disconnect-aime-reader").addEventListener("click", () => {
