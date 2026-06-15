@@ -228,5 +228,6 @@
   "aime.log.felicaAccessCodeRead": "Aime access code decoded",
   "aime.error.felicaAccessCodeInvalid": "Could not decode Aime access code from SPAD0",
   "action.connectReader": "Connect Reader",
-  "action.testAimeReader": "Test Reader"
+  "action.testAimeReader": "Test Reader",
+  "action.clearAimeReaderLed": "Reader LED Off"
 }

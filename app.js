@@ -34,7 +34,7 @@ const LANGUAGE_STORAGE_KEY = "controller-test-language";
 const AIME_READER_DEFAULT_BAUD = 115200;
 const AIME_READER_SCAN_DURATION_MS = 10000;
 const AIME_READER_SCAN_POLL_INTERVAL_MS = 500;
-const AIME_READER_LED_BLINK_MS = 280;
+const AIME_READER_LED_BLINK_MS = 1000;
 const AIME_READER_DEBUG_LOG = false;
 const SG_SYNC = 0xe0;
 const SG_ESCAPE = 0xd0;
@@ -177,6 +177,7 @@ const ui = {
   aimeReaderStatus: document.querySelector("#aime-reader-status"),
   aimeReaderMode: document.querySelector("#aime-reader-mode"),
   aimeReaderBaud: document.querySelector("#aime-reader-baud"),
+  aimeReaderLedColor: document.querySelector("#aime-reader-led-color"),
   aimeReaderFw: document.querySelector("#aime-reader-fw"),
   aimeReaderHw: document.querySelector("#aime-reader-hw"),
   aimeCardType: document.querySelector("#aime-card-type"),
@@ -1577,7 +1578,6 @@ class AimeReaderSerialAdapter {
 
     const fw = await this.sendCommand(SG_NFC_ADDR, SG_CMD_GET_FW_VERSION);
     this.protocol = "sega";
-    await this.setReaderLed([0x00, 0x00, 0x40], "probe");
     ui.aimeReaderFw.textContent = decodeReaderVersion(fw.payload);
 
     const hw = await this.sendCommand(SG_NFC_ADDR, SG_CMD_GET_HW_VERSION);
@@ -1589,7 +1589,7 @@ class AimeReaderSerialAdapter {
     await this.sendCommand(SG_NFC_ADDR, SG_CMD_MIFARE_SET_KEY_B, asciiBytes("WCCFv2"), 1500).catch(() => {});
     await this.sendCommand(SG_NFC_ADDR, SG_CMD_MIFARE_SET_KEY_A, [0x60, 0x90, 0xd0, 0x06, 0x32, 0xf5], 1500).catch(() => {});
 
-    await this.setReaderLed([0x00, 0x40, 0x00], "ready");
+    await this.setReaderLed([0x00, 0x00, 0x00], "off", { silent: true });
     setAimeReaderStatusKey("aime.status.probeOk");
   }
 
@@ -1667,17 +1667,24 @@ class AimeReaderSerialAdapter {
     clearAimeCardDisplay();
     appendAimeReaderLog(t("aime.log.scanStarted", { seconds: AIME_READER_SCAN_DURATION_MS / 1000 }));
 
+    const scanRgb = hexToReaderRgb(ui.aimeReaderLedColor?.value || "#ffffff");
     const deadline = Date.now() + AIME_READER_SCAN_DURATION_MS;
+    let nextBlinkAt = 0;
+    let blinkOn = false;
     while (Date.now() < deadline) {
       try {
-        await this.setReaderLed([0xff, 0xff, 0xff], "scan", { silent: true });
+        const now = Date.now();
+        if (now >= nextBlinkAt) {
+          blinkOn = !blinkOn;
+          nextBlinkAt = now + AIME_READER_LED_BLINK_MS;
+          await this.setReaderLed(blinkOn ? scanRgb : [0x00, 0x00, 0x00], "scan", { silent: true });
+        }
         if (await this.pollCardOnce({ manageLed: false, throwOnReadError: true })) {
           await this.setReaderLed([0x00, 0x00, 0xff], "scan-ok", { silent: true });
           appendAimeReaderLog(t("aime.log.scanCardFound"));
           setAimeReaderStatusKey("aime.status.cardFound");
           return true;
         }
-        await this.setReaderLed([0x00, 0x00, 0x00], "scan", { silent: true });
       } catch (error) {
         await this.setReaderLed([0xff, 0x00, 0x00], "scan-error", { silent: true });
         throw error;
@@ -4124,6 +4131,7 @@ async function connectSelectedAimeReader() {
 
 async function disconnectAimeReader() {
   if (aimeReaderAdapter) {
+    await aimeReaderAdapter.setReaderLed?.([0x00, 0x00, 0x00], "off", { silent: true }).catch(() => {});
     await aimeReaderAdapter.disconnect();
     aimeReaderAdapter = null;
   } else {
@@ -4167,6 +4175,27 @@ async function scanAimeReaderTimed() {
     await adapter.runTimedReaderScan();
   } catch (error) {
     await aimeReaderAdapter?.setReaderLed?.([0xff, 0x00, 0x00], "scan-error", { silent: true }).catch(() => {});
+    setAimeReaderStatus(`Reader COM: ${error.message || String(error)}`, true);
+    appendAimeReaderLog(t("aime.log.error", { message: error.message || String(error) }));
+  }
+}
+
+async function sendAimeReaderLedColor() {
+  try {
+    const adapter = await ensureAimeReaderConnected();
+    const rgb = hexToReaderRgb(ui.aimeReaderLedColor?.value || "#ffffff");
+    await adapter.setReaderLed(rgb, "manual");
+  } catch (error) {
+    setAimeReaderStatus(`Reader COM: ${error.message || String(error)}`, true);
+    appendAimeReaderLog(t("aime.log.error", { message: error.message || String(error) }));
+  }
+}
+
+async function clearAimeReaderLedColor() {
+  try {
+    const adapter = await ensureAimeReaderConnected();
+    await adapter.setReaderLed([0x00, 0x00, 0x00], "off");
+  } catch (error) {
     setAimeReaderStatus(`Reader COM: ${error.message || String(error)}`, true);
     appendAimeReaderLog(t("aime.log.error", { message: error.message || String(error) }));
   }
@@ -4355,6 +4384,14 @@ function bindActions() {
 
   document.querySelector("#scan-aime-reader").addEventListener("click", () => {
     scanAimeReaderTimed();
+  });
+
+  document.querySelector("#send-aime-reader-led").addEventListener("click", () => {
+    sendAimeReaderLedColor();
+  });
+
+  document.querySelector("#clear-aime-reader-led").addEventListener("click", () => {
+    clearAimeReaderLedColor();
   });
 
   document.querySelector("#disconnect-aime-reader").addEventListener("click", () => {

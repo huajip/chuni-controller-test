@@ -441,6 +441,18 @@ h2 {
   margin-top: 12px;
 }
 
+.reader-led-controls {
+  margin-top: 12px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: end;
+}
+
+.reader-led-controls .light-control {
+  min-width: 180px;
+}
+
 .card-test-item {
   border: 1px solid var(--line);
   border-radius: 14px;
