@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title data-i18n="app.title">Controller Web Test</title>
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <main class="app-shell">
+    <section class="hero">
+      <div>
+        <h1 data-i18n="app.heading">Controller Test</h1>
+      </div>
+      <div class="hero-status">
+        <label class="status-card language-card">
+          <span class="status-label" data-i18n="language.label">Language</span>
+          <select id="language-select">
+            <option value="en-us" data-i18n="language.enUs">English</option>
+            <option value="zh-cn" data-i18n="language.zhCn">简体中文</option>
+            <option value="zh-tw" data-i18n="language.zhTw">繁體中文</option>
+            <option value="zh-hk" data-i18n="language.zhHk">粵語</option>
+            <option value="ja-jp" data-i18n="language.jaJp">日本語</option>
+            <option value="ko-kr" data-i18n="language.koKr">한국어</option>
+          </select>
+        </label>
+        <div class="status-card">
+          <span class="status-label" data-i18n="status.connection">Connection</span>
+          <strong id="connection-status" data-i18n="status.disconnected">Disconnected</strong>
+        </div>
+        <div class="status-card">
+          <span class="status-label" data-i18n="status.device">Device</span>
+          <strong id="device-name">-</strong>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel controls-panel">
+      <div class="control-group">
+        <button id="connect-yubideck" class="action" data-i18n="action.connectYubideck">Connect YubiDeck</button>
+        <button id="connect-tasoller-family" class="action" data-i18n="action.connectTasoller">Connect Tasoller / Plus</button>
+        <button id="connect-io4" class="action" data-i18n="action.connectIo4">Connect IO4</button>
+        <button id="connect-touch-com" class="action" data-i18n="action.connectTouchCom">Connect Touch COM</button>
+        <button id="disconnect-touch-com" class="action ghost" data-i18n="action.disconnectTouchCom">Disconnect Touch COM</button>
+        <button id="disconnect" class="action ghost" data-i18n="action.disconnect">Disconnect</button>
+      </div>
+      <div class="notes">
+        <p id="touch-com-status" data-i18n="touch.status.disconnected">Touch COM: disconnected</p>
+      </div>
+      <div class="touch-settings">
+        <label class="light-control">
+          <span data-i18n="touch.threshold">Touch Threshold</span>
+          <div class="range-control">
+            <input id="touch-threshold-range" type="range" min="1" max="255" step="1" value="20">
+            <input id="touch-threshold" type="number" min="1" max="255" step="1" value="20">
+          </div>
+        </label>
+      </div>
+    </section>
+
+    <section class="panel visual-panel">
+      <div class="section-head">
+        <h2 data-i18n="section.inputs">AIR / Slider / Buttons</h2>
+        <span id="active-summary" class="muted" data-i18n="summary.activeInputs">Active inputs: 0</span>
+      </div>
+
+      <div class="air-panel">
+        <div id="air-grid" class="air-grid"></div>
+      </div>
+
+      <div class="controller-layout">
+        <div id="slider-grid" class="slider-grid"></div>
+        <div class="button-stack-wrap">
+          <h3 data-i18n="section.buttons">Buttons</h3>
+          <div id="button-stack" class="button-stack"></div>
+        </div>
+      </div>
+    </section>
+
+    <section id="yubideck-card-panel" class="panel raw-panel" hidden>
+      <div class="section-head">
+        <h2 data-i18n="section.card">YubiDeck Aime / Card</h2>
+        <span id="card-test-status" class="muted" data-i18n="status.idle">Idle</span>
+      </div>
+      <div class="card-test-grid">
+        <div class="card-test-item">
+          <span class="card-test-label" data-i18n="card.status">Card Status</span>
+          <strong id="card-status-value">0</strong>
+        </div>
+        <div class="card-test-item">
+          <span class="card-test-label" data-i18n="card.id">Card ID</span>
+          <strong id="card-id-value">-</strong>
+        </div>
+        <label id="card-light-control" class="card-test-item card-light-item">
+          <span class="card-test-label" data-i18n="card.logoLight">Aime / Logo Light</span>
+          <input id="color-card" type="color" value="#ffffff">
+        </label>
+      </div>
+    </section>
+
+    <section id="aime-reader-panel" class="panel raw-panel">
+      <div class="section-head">
+        <h2 data-i18n="section.aimeReader">Aime Reader COM</h2>
+        <span id="aime-reader-status" class="muted" data-i18n="aime.status.disconnected">Reader COM: disconnected</span>
+      </div>
+      <div class="reader-settings">
+        <label class="light-control">
+          <span data-i18n="aime.baudRate">Baud Rate</span>
+          <select id="aime-reader-baud">
+            <option value="115200" selected>115200</option>
+            <option value="38400">38400</option>
+          </select>
+        </label>
+        <div class="card-test-item">
+          <span class="card-test-label" data-i18n="aime.firmware">Firmware</span>
+          <strong id="aime-reader-fw">-</strong>
+        </div>
+        <div class="card-test-item">
+          <span class="card-test-label" data-i18n="aime.hardware">Hardware</span>
+          <strong id="aime-reader-hw">-</strong>
+        </div>
+        <div class="card-test-item">
+          <span class="card-test-label" data-i18n="aime.cardType">Card Type</span>
+          <strong id="aime-card-type">-</strong>
+        </div>
+        <div class="card-test-item">
+          <span class="card-test-label" data-i18n="aime.cardValue">Card Value</span>
+          <strong id="aime-card-value">-</strong>
+        </div>
+      </div>
+      <div class="control-group reader-actions">
+        <button id="connect-aime-reader" class="action" data-i18n="action.connectAimeReader">Connect Aime Reader COM</button>
+        <button id="connect-hinata-reader" class="action" data-i18n="action.connectHinataReader">Connect Hinata USB Reader Mode</button>
+        <button id="probe-aime-reader" class="action" data-i18n="action.probeAimeReader">Run Reader Probe</button>
+        <button id="poll-aime-reader" class="action" data-i18n="action.pollAimeReader">Poll Card Once</button>
+        <button id="disconnect-aime-reader" class="action ghost" data-i18n="action.disconnectAimeReader">Disconnect Reader COM</button>
+        <button id="clear-aime-reader-log" class="action ghost" data-i18n="action.clearAimeReaderLog">Clear Reader Log</button>
+      </div>
+      <pre id="aime-reader-log" class="raw-state" data-i18n="aime.noPackets">No reader packets yet.</pre>
+    </section>
+
+    <section class="panel light-panel">
+      <div class="section-head">
+        <h2 data-i18n="section.light">Light Output</h2>
+        <span id="light-status" class="muted" data-i18n="status.ready">Ready</span>
+      </div>
+
+      <div class="light-grid">
+        <label class="light-control">
+          <span data-i18n="light.sliderBase">Slider Base</span>
+          <input id="color-slider" type="color" value="#ffd400">
+        </label>
+        <label class="light-control">
+          <span data-i18n="light.sliderActive">Slider Active</span>
+          <input id="color-slider-active" type="color" value="#ff3b30">
+        </label>
+        <label class="light-control">
+          <span data-i18n="light.gap">Gap / Seam</span>
+          <input id="color-gap" type="color" value="#a855f7">
+        </label>
+        <label class="light-control">
+          <span data-i18n="light.gapMode">Gap Mode</span>
+          <select id="gap-mode">
+            <option value="none" data-i18n="gap.none">None</option>
+            <option value="4k" selected>4K</option>
+            <option value="8k">8K</option>
+            <option value="16k">16K</option>
+          </select>
+        </label>
+        <label class="light-control">
+          <span data-i18n="light.leftAir">Left Air</span>
+          <input id="color-left-air" type="color" value="#60a5fa">
+        </label>
+        <label class="light-control">
+          <span data-i18n="light.rightAir">Right Air</span>
+          <input id="color-right-air" type="color" value="#f59e0b">
+        </label>
+      </div>
+
+      <div class="control-group">
+        <button id="lights-solid" class="action" data-i18n="action.sendSolid">Send Solid</button>
+        <button id="lights-active" class="action" data-i18n="action.sendActive">Send Active Inputs</button>
+        <button id="lights-clear" class="action ghost" data-i18n="action.allOff">All Off</button>
+      </div>
+    </section>
+
+    <section id="options-panel" class="panel raw-panel" hidden>
+      <div class="section-head">
+        <h2 data-i18n="section.options">TASOLLER Plus Mode</h2>
+        <span id="options-status" class="muted" data-i18n="status.idle">Idle</span>
+      </div>
+
+      <div class="card-test-grid" style="grid-template-columns: minmax(0, 1fr);">
+        <div class="card-test-item" hidden>
+          <span class="card-test-label" data-i18n="options.link">Options Link</span>
+          <strong id="options-interface-value">-</strong>
+        </div>
+        <div class="card-test-item" hidden>
+          <span class="card-test-label" data-i18n="options.transport">Transport</span>
+          <strong id="options-endpoints-value">-</strong>
+        </div>
+        <div class="card-test-item">
+          <span class="card-test-label" data-i18n="options.currentMode">Current Mode</span>
+          <strong id="options-mode-value">-</strong>
+        </div>
+      </div>
+
+      <div class="control-group" style="margin-top: 12px;" hidden>
+        <button id="options-use-hid" class="action" hidden data-i18n="options.useHid">Use WebHID</button>
+        <button id="options-use-usb" class="action ghost" hidden data-i18n="options.useUsb">Use WebUSB</button>
+        <button id="options-poll-hid" class="action ghost" hidden data-i18n="options.pollHid">Poll WebHID</button>
+        <button id="options-trigger-dbt" class="action" hidden data-i18n="options.triggerDbt">Trigger DBT</button>
+        <button id="options-stop" class="action ghost" hidden data-i18n="options.stop">Stop Options</button>
+        <button id="options-restart" class="action" hidden data-i18n="options.restart">Restart TASOLLER Options</button>
+        <button id="options-clear" class="action ghost" hidden data-i18n="options.clearLog">Clear Options Log</button>
+      </div>
+
+      <pre id="options-log" class="raw-state" hidden data-i18n="options.noPackets">No Options / DBT packets yet.</pre>
+    </section>
+  </main>
+
+  <template id="slider-cell-template">
+    <button class="slider-cell" type="button">
+      <span class="index"></span>
+      <span class="value"></span>
+    </button>
+  </template>
+
+  <template id="air-cell-template">
+    <div class="air-row">
+      <span class="index"></span>
+      <div class="track">
+        <div class="fill"></div>
+      </div>
+      <span class="value"></span>
+    </div>
+  </template>
+
+  <template id="button-indicator-template">
+    <div class="button-indicator">
+      <span class="label"></span>
+      <div class="orb">
+        <strong class="value">0</strong>
+      </div>
+    </div>
+  </template>
+
+  <script type="module" src="./app.js?v=20260426-i18n"></script>
+</body>
+</html>
