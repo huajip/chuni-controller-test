@@ -17,11 +17,11 @@
           <span class="status-label" data-i18n="language.label">Language</span>
           <select id="language-select">
             <option value="en-us" data-i18n="language.enUs">English</option>
-            <option value="zh-cn" data-i18n="language.zhCn">简体中文</option>
-            <option value="zh-tw" data-i18n="language.zhTw">繁體中文</option>
-            <option value="zh-hk" data-i18n="language.zhHk">粵語</option>
-            <option value="ja-jp" data-i18n="language.jaJp">日本語</option>
-            <option value="ko-kr" data-i18n="language.koKr">한국어</option>
+            <option value="zh-cn" data-i18n="language.zhCn">&#31616;&#20307;&#20013;&#25991;</option>
+            <option value="zh-tw" data-i18n="language.zhTw">&#32321;&#39636;&#20013;&#25991;</option>
+            <option value="zh-hk" data-i18n="language.zhHk">&#32321;&#39636;&#20013;&#25991;&#65288;&#39321;&#28207;&#65289;</option>
+            <option value="ja-jp" data-i18n="language.jaJp">&#26085;&#26412;&#35486;</option>
+            <option value="ko-kr" data-i18n="language.koKr">&#54620;&#44397;&#50612;</option>
           </select>
         </label>
         <div class="status-card">
@@ -105,6 +105,13 @@
       </div>
       <div class="reader-settings">
         <label class="light-control">
+          <span data-i18n="aime.readerMode">Reader Mode</span>
+          <select id="aime-reader-mode">
+            <option value="aime-com" data-i18n="aime.readerMode.aimeCom">Aime COM</option>
+            <option value="hinata-sega" data-i18n="aime.readerMode.hinataSega">Hinata SEGA</option>
+          </select>
+        </label>
+        <label class="light-control">
           <span data-i18n="aime.baudRate">Baud Rate</span>
           <select id="aime-reader-baud">
             <option value="115200" selected>115200</option>
@@ -129,22 +136,9 @@
         </div>
       </div>
       <div class="control-group reader-actions">
-        <button id="connect-aime-reader" class="action" data-i18n="action.connectAimeReader">Connect Aime Reader COM</button>
-        <button id="connect-hinata-reader" class="action" data-i18n="action.connectHinataReader">Connect Hinata HID Reader Mode</button>
-        <button id="connect-hinata-usb-reader" class="action" data-i18n="action.connectHinataUsbReader">Connect Hinata WebUSB Reader Mode</button>
-        <button id="probe-aime-reader" class="action" data-i18n="action.probeAimeReader">Run Reader Probe</button>
-        <button id="scan-aime-reader" class="action" data-i18n="action.scanAimeReader">10s Reader Scan</button>
-        <button id="poll-aime-reader" class="action" data-i18n="action.pollAimeReader">Poll Card Once</button>
+        <button id="connect-aime-reader" class="action" data-i18n="action.connectReader">Connect Reader</button>
+        <button id="scan-aime-reader" class="action" data-i18n="action.testAimeReader">Test Reader</button>
         <button id="disconnect-aime-reader" class="action ghost" data-i18n="action.disconnectAimeReader">Disconnect Reader COM</button>
-        <button id="clear-aime-reader-log" class="action ghost" data-i18n="action.clearAimeReaderLog">Clear Reader Log</button>
-      </div>
-      <div class="reader-led-controls">
-        <label class="light-control">
-          <span data-i18n="aime.readerLedColor">Reader LED Color</span>
-          <input id="aime-reader-led-color" type="color" value="#ffffff">
-        </label>
-        <button id="flash-aime-reader-led" class="action" data-i18n="action.flashAimeReaderLed">Flash White 10s</button>
-        <button id="send-aime-reader-led" class="action" data-i18n="action.sendAimeReaderLed">Send Reader LED</button>
       </div>
       <pre id="aime-reader-log" class="raw-state" data-i18n="aime.noPackets">No reader packets yet.</pre>
     </section>
@@ -255,6 +249,6 @@
     </div>
   </template>
 
-  <script type="module" src="./app.js?v=20260426-i18n"></script>
+  <script type="module" src="./app.js?v=20260616-reader-test"></script>
 </body>
 </html>

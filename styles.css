@@ -433,24 +433,12 @@ h2 {
 .reader-settings {
   margin-top: 10px;
   display: grid;
-  grid-template-columns: 180px repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(6, minmax(0, 1fr));
   gap: 10px;
 }
 
 .reader-actions {
   margin-top: 12px;
-}
-
-.reader-led-controls {
-  margin-top: 12px;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 12px;
-  align-items: end;
-}
-
-.reader-led-controls .light-control {
-  min-width: 180px;
 }
 
 .card-test-item {
@@ -470,6 +458,13 @@ h2 {
   display: block;
   margin-top: 6px;
   font-size: 16px;
+  white-space: pre-line;
+  word-break: break-word;
+}
+
+#aime-card-value {
+  font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+  line-height: 1.55;
 }
 
 .card-light-item input[type="color"] {

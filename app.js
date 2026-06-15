@@ -1,5 +1,8 @@
 ﻿import { TasollerOptionsProtocol } from "./tasoller-options-protocol.js?v=20260424-1";
 
+import { encodeEpassCardId } from "./card-cipher.js";
+import { decodeSpad0AccessCode } from "./spad0.js";
+
 const VENDOR_TASOLLER = 0x1ccf;
 const PRODUCT_TASOLLER = 0x2333;
 const VENDOR_TASOLLER_PLUS = 0x0e8f;
@@ -32,6 +35,7 @@ const AIME_READER_DEFAULT_BAUD = 115200;
 const AIME_READER_SCAN_DURATION_MS = 10000;
 const AIME_READER_SCAN_POLL_INTERVAL_MS = 500;
 const AIME_READER_LED_BLINK_MS = 280;
+const AIME_READER_DEBUG_LOG = false;
 const SG_SYNC = 0xe0;
 const SG_ESCAPE = 0xd0;
 const SG_NFC_ADDR = 0x00;
@@ -171,8 +175,8 @@ const ui = {
   optionsActiveSummary: document.querySelector("#options-active-summary"),
   touchComStatus: document.querySelector("#touch-com-status"),
   aimeReaderStatus: document.querySelector("#aime-reader-status"),
+  aimeReaderMode: document.querySelector("#aime-reader-mode"),
   aimeReaderBaud: document.querySelector("#aime-reader-baud"),
-  aimeReaderLedColor: document.querySelector("#aime-reader-led-color"),
   aimeReaderFw: document.querySelector("#aime-reader-fw"),
   aimeReaderHw: document.querySelector("#aime-reader-hw"),
   aimeCardType: document.querySelector("#aime-card-type"),
@@ -1371,7 +1375,9 @@ class AimeReaderSerialAdapter {
         continue;
       }
       if (length === 0 && lcs === 0xff) {
-        appendAimeReaderLog("RX PN532 ACK");
+        if (AIME_READER_DEBUG_LOG) {
+          appendAimeReaderLog("RX PN532 ACK");
+        }
         this.rawBytes.splice(0, 6);
         continue;
       }
@@ -1390,7 +1396,9 @@ class AimeReaderSerialAdapter {
         appendAimeReaderLog(t("aime.log.badFrame", { hex: formatHex(packet) }));
         continue;
       }
-      appendAimeReaderLog(`RX PN532 cmd=${hexByte(responseCommand)} payload=${formatHex(payload) || "-"}`);
+      if (AIME_READER_DEBUG_LOG) {
+        appendAimeReaderLog(`RX PN532 cmd=${hexByte(responseCommand)} payload=${formatHex(payload) || "-"}`);
+      }
       const waiterIndex = this.pn532Waiters.findIndex((waiter) => waiter.command === responseCommand);
       if (waiterIndex < 0) {
         continue;
@@ -1429,7 +1437,9 @@ class AimeReaderSerialAdapter {
       frame,
     };
 
-    appendAimeReaderLog(`RX ${describeSgResponse(response)}`);
+    if (AIME_READER_DEBUG_LOG) {
+      appendAimeReaderLog(`RX ${describeSgResponse(response)}`);
+    }
     const waiterIndex = this.waiters.findIndex((waiter) =>
       waiter.addr === response.addr &&
       waiter.seq === response.seq &&
@@ -1472,7 +1482,9 @@ class AimeReaderSerialAdapter {
     this.seq = (this.seq + 1) & 0xff;
     const frame = [5 + data.length, addr, seq, cmd, data.length, ...data];
     const encoded = encodeSgFrame(frame);
-    appendAimeReaderLog(`TX ${describeSgRequest({ addr, seq, cmd, payload: data })}`);
+    if (AIME_READER_DEBUG_LOG) {
+      appendAimeReaderLog(`TX ${describeSgRequest({ addr, seq, cmd, payload: data })}`);
+    }
 
     const responsePromise = new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
@@ -1508,7 +1520,7 @@ class AimeReaderSerialAdapter {
     this.seq = (this.seq + 1) & 0xff;
     const frame = [5 + data.length, addr, seq, cmd, data.length, ...data];
     const encoded = encodeSgFrame(frame);
-    if (!options.silent) {
+    if (!options.silent && AIME_READER_DEBUG_LOG) {
       appendAimeReaderLog(`TX ${describeSgRequest({ addr, seq, cmd, payload: data })}`);
     }
     await this.writeBytes(encoded);
@@ -1535,7 +1547,9 @@ class AimeReaderSerialAdapter {
     });
 
     const packet = buildPn532Packet(command, payload);
-    appendAimeReaderLog(`TX PN532 cmd=${hexByte(command)} data=${formatHex(packet)}`);
+    if (AIME_READER_DEBUG_LOG) {
+      appendAimeReaderLog(`TX PN532 cmd=${hexByte(command)} data=${formatHex(packet)}`);
+    }
     await this.writeBytes(packet);
     return responsePromise;
   }
@@ -1632,8 +1646,7 @@ class AimeReaderSerialAdapter {
     }
 
     const cardInfo = describeFelicaCard(parsed.idm, parsed.pmm);
-    ui.aimeCardType.textContent = t("aime.card.felicaModel", { model: cardInfo.label });
-    ui.aimeCardValue.textContent = `IDm ${formatHex(parsed.idm)} / PMm ${formatHex(parsed.pmm)}`;
+    showFelicaCardNumbers(parsed.idm, cardInfo);
     appendAimeReaderLog(t(cardInfo.valid ? "aime.log.felicaValid" : "aime.log.felicaUnsupported", {
       reason: cardInfo.reason,
     }));
@@ -1716,15 +1729,17 @@ class AimeReaderSerialAdapter {
         buildFelicaReadWithoutEncryption(idm, FELICA_LITES_READ_ONLY_SERVICE, 0),
       );
       const spad0 = parseFelicaReadWithoutEncryptionResponse(response.payload, idm);
-      const accessCode = extractValidatedAccessCode(spad0);
-      appendAimeReaderLog(t("aime.log.felicaSpad0", { service: "0x000b", block: 0, hex: formatHex(spad0) }));
+      const accessCode = decodeSpad0AccessCode(spad0);
       if (accessCode) {
-        ui.aimeCardType.textContent = t("aime.card.felicaAccessCode", { model: cardInfo.label });
-        ui.aimeCardValue.textContent = accessCode;
+        showFelicaCardNumbers(idm, cardInfo, accessCode);
+        appendAimeReaderLog(t("aime.log.felicaAccessCodeRead"));
       } else {
-        ui.aimeCardType.textContent = t("aime.card.felicaSpad0", { model: cardInfo.label });
-        ui.aimeCardValue.textContent = `IDm ${formatHex(idm)} / SPAD0 ${formatHex(spad0)}`;
-        appendAimeReaderLog(t("aime.log.felicaSpad0NoAccessCode"));
+        showFelicaCardNumbers(idm, cardInfo);
+        const error = new Error(t("aime.error.felicaAccessCodeInvalid"));
+        if (options.throwOnError) {
+          throw error;
+        }
+        appendAimeReaderLog(error.message);
       }
     } catch (error) {
       appendAimeReaderLog(t("aime.log.felicaSpad0Failed", { message: error.message || String(error) }));
@@ -1766,8 +1781,7 @@ class AimeReaderSerialAdapter {
     appendAimeReaderLog(t(cardInfo.valid ? "aime.log.pn532FelicaValid" : "aime.log.pn532FelicaUnsupported", {
       reason: cardInfo.reason,
     }));
-    ui.aimeCardType.textContent = t("aime.card.felicaModel", { model: cardInfo.label });
-    ui.aimeCardValue.textContent = `IDm ${formatHex(parsed.idm)} / PMm ${formatHex(parsed.pmm)}`;
+    showFelicaCardNumbers(parsed.idm, cardInfo);
 
     const inner = buildFelicaReadWithoutEncryption(parsed.idm, FELICA_LITES_READ_ONLY_SERVICE, 0);
     const dataExchange = await this.sendPn532Command(PN532_CMD_IN_DATA_EXCHANGE, [parsed.target, ...inner], 2200);
@@ -1775,14 +1789,13 @@ class AimeReaderSerialAdapter {
       throw new Error(t("aime.error.pn532DataExchangeStatus", { status: hexByte(dataExchange[0] ?? 0) }));
     }
     const spad0 = parseFelicaReadWithoutEncryptionResponse(dataExchange.slice(1), parsed.idm);
-    const accessCode = extractValidatedAccessCode(spad0);
-    appendAimeReaderLog(t("aime.log.pn532FelicaSpad0", { service: "0x000b", block: 0, hex: formatHex(spad0) }));
+    const accessCode = decodeSpad0AccessCode(spad0);
     if (accessCode) {
-      ui.aimeCardType.textContent = t("aime.card.felicaAccessCode", { model: cardInfo.label });
-      ui.aimeCardValue.textContent = accessCode;
+      showFelicaCardNumbers(parsed.idm, cardInfo, accessCode);
+      appendAimeReaderLog(t("aime.log.felicaAccessCodeRead"));
     } else {
-      ui.aimeCardType.textContent = t("aime.card.felicaSpad0", { model: cardInfo.label });
-      ui.aimeCardValue.textContent = `IDm ${formatHex(parsed.idm)} / SPAD0 ${formatHex(spad0)}`;
+      showFelicaCardNumbers(parsed.idm, cardInfo);
+      throw new Error(t("aime.error.felicaAccessCodeInvalid"));
     }
     setAimeReaderStatusKey("aime.status.cardFound");
   }
@@ -1882,7 +1895,9 @@ class HinataHidReaderAdapter extends AimeReaderSerialAdapter {
         return;
       }
 
-      appendAimeReaderLog(`RX HID report=${hexByte(event.reportId)} data=${formatHex(bytes) || "-"}`);
+      if (AIME_READER_DEBUG_LOG) {
+        appendAimeReaderLog(`RX HID report=${hexByte(event.reportId)} data=${formatHex(bytes) || "-"}`);
+      }
       for (const byte of bytes) {
         this.consumeByte(byte);
       }
@@ -1949,7 +1964,9 @@ class HinataHidReaderAdapter extends AimeReaderSerialAdapter {
       this.firmwareWaiters.push({ resolve, reject, timer });
     });
 
-    appendAimeReaderLog("TX HID report=0x01 data=01");
+    if (AIME_READER_DEBUG_LOG) {
+      appendAimeReaderLog("TX HID report=0x01 data=01");
+    }
     await this.device.sendReport(0x01, Uint8Array.from([0x01]));
     const firmware = await firmwarePromise;
     ui.aimeReaderFw.textContent = `Hinata ${firmware}`;
@@ -1965,7 +1982,9 @@ class HinataHidReaderAdapter extends AimeReaderSerialAdapter {
     let lastError = null;
     for (const reportId of [...new Set(attempts)]) {
       try {
-        appendAimeReaderLog(`TX HID report=${hexByte(reportId)} data=${formatHex(bytes)}`);
+        if (AIME_READER_DEBUG_LOG) {
+          appendAimeReaderLog(`TX HID report=${hexByte(reportId)} data=${formatHex(bytes)}`);
+        }
         await this.device.sendReport(reportId, bytes);
         this.hidReportId = reportId;
         return;
@@ -2077,10 +2096,19 @@ class HinataUsbReaderAdapter extends AimeReaderSerialAdapter {
   async probeEndpointPairs(candidates) {
     for (const outEndpoint of candidates.write) {
       for (const inEndpoint of candidates.read) {
-        appendAimeReaderLog(t("aime.log.usbProbePair", {
-          out: outEndpoint.endpointNumber,
-          in: inEndpoint.endpointNumber,
-        }));
+        if (AIME_READER_DEBUG_LOG) {
+          appendAimeReaderLog(t("aime.log.usbProbePair", {
+            out: outEndpoint.endpointNumber,
+            in: inEndpoint.endpointNumber,
+          }));
+        }
+
+        const sega = await this.trySegaEndpoint(outEndpoint, inEndpoint);
+        if (sega) {
+          this.selectEndpoints(outEndpoint, inEndpoint, "sega-reader");
+          ui.aimeReaderFw.textContent = sega;
+          return;
+        }
 
         const hinataFw = await this.tryHinataFirmwareEndpoint(outEndpoint, inEndpoint);
         if (hinataFw) {
@@ -2095,13 +2123,6 @@ class HinataUsbReaderAdapter extends AimeReaderSerialAdapter {
           this.selectEndpoints(outEndpoint, inEndpoint, "direct-pn532");
           ui.aimeReaderFw.textContent = directPn532;
           ui.aimeReaderHw.textContent = "Direct PN532 USB";
-          return;
-        }
-
-        const sega = await this.trySegaEndpoint(outEndpoint, inEndpoint);
-        if (sega) {
-          this.selectEndpoints(outEndpoint, inEndpoint, "sega-reader");
-          ui.aimeReaderFw.textContent = sega;
           return;
         }
       }
@@ -2122,7 +2143,9 @@ class HinataUsbReaderAdapter extends AimeReaderSerialAdapter {
       const probe = this.padUsbPacket(Uint8Array.from([HINATA_REPORT_ID, HINATA_CMD_FW]), outEndpoint.packetSize);
       await this.transferOut(outEndpoint, probe);
       const bytes = await this.transferIn(inEndpoint, 1200);
-      appendAimeReaderLog(`RX USB data=${formatHex(bytes)}`);
+      if (AIME_READER_DEBUG_LOG) {
+        appendAimeReaderLog(`RX USB data=${formatHex(bytes)}`);
+      }
       if (bytes[0] === 0x03) {
         const firmware = extractHinataFirmware(bytes.slice(1));
         if (firmware) {
@@ -2143,7 +2166,9 @@ class HinataUsbReaderAdapter extends AimeReaderSerialAdapter {
       const packet = buildPn532Packet(PN532_CMD_GET_FIRMWARE_VERSION, []);
       await this.transferOut(outEndpoint, packet);
       const bytes = await this.transferIn(inEndpoint, 1200);
-      appendAimeReaderLog(`RX USB PN532 data=${formatHex(bytes)}`);
+      if (AIME_READER_DEBUG_LOG) {
+        appendAimeReaderLog(`RX USB PN532 data=${formatHex(bytes)}`);
+      }
       const payload = extractPn532ResponsePayload(bytes, PN532_CMD_GET_FIRMWARE_VERSION);
       if (payload.length >= 4) {
         return `PN532 IC=${hexByte(payload[0])} FW=${payload[1]}.${payload[2]} support=${hexByte(payload[3])}`;
@@ -2162,7 +2187,9 @@ class HinataUsbReaderAdapter extends AimeReaderSerialAdapter {
       const frame = encodeSgFrame([5, SG_NFC_ADDR, 0, SG_CMD_GET_FW_VERSION, 0]);
       await this.transferOut(outEndpoint, frame);
       const bytes = await this.transferIn(inEndpoint, 1200);
-      appendAimeReaderLog(`RX USB SEGA data=${formatHex(bytes)}`);
+      if (AIME_READER_DEBUG_LOG) {
+        appendAimeReaderLog(`RX USB SEGA data=${formatHex(bytes)}`);
+      }
       const decoded = decodeSgResponseBytes(bytes);
       if (decoded.cmd === SG_CMD_GET_FW_VERSION && decoded.status === 0) {
         return decodeReaderVersion(decoded.payload) || "SEGA Reader";
@@ -2226,12 +2253,16 @@ class HinataUsbReaderAdapter extends AimeReaderSerialAdapter {
     }
 
     if (this.protocol === "hinata-pn532" && bytes[1] === HINATA_CMD_PN532) {
-      appendAimeReaderLog(`RX USB Hinata PN532 data=${formatHex(bytes)}`);
+      if (AIME_READER_DEBUG_LOG) {
+        appendAimeReaderLog(`RX USB Hinata PN532 data=${formatHex(bytes)}`);
+      }
       bytes.slice(2).forEach((byte) => this.consumeRawByte(byte));
       return;
     }
 
-    appendAimeReaderLog(`RX USB data=${formatHex(bytes)}`);
+    if (AIME_READER_DEBUG_LOG) {
+      appendAimeReaderLog(`RX USB data=${formatHex(bytes)}`);
+    }
     bytes.forEach((byte) => this.consumeByte(byte));
   }
 
@@ -3168,19 +3199,52 @@ function felicaOsVersionLabel(osVersion) {
   }
 }
 
-function extractValidatedAccessCode(block) {
-  for (let offset = 0; offset <= block.length - 10; offset++) {
-    const candidate = block.slice(offset, offset + 10);
-    const text = bcdBytesToText(candidate);
-    if (isValidAccessCode(text)) {
-      return text;
-    }
-  }
-  return "";
-}
-
 function isValidAccessCode(text) {
   return /^\d{20}$/.test(text);
+}
+
+function normalizeCardHex(bytes) {
+  return Array.from(bytes ?? [], (value) => value.toString(16).padStart(2, "0")).join("").toUpperCase();
+}
+
+function deriveMinimeAccessCode(idm) {
+  const hex = normalizeCardHex(idm);
+  if (!/^[0-9A-F]{16}$/.test(hex)) {
+    return "";
+  }
+  return BigInt(`0x${hex}`).toString(10).padStart(20, "0");
+}
+
+function deriveZhouAccessCode(idm) {
+  const hex = normalizeCardHex(idm);
+  if (!/^[0-9A-F]{16}$/.test(hex) && !/^[0-9A-F]{12}$/.test(hex)) {
+    return "";
+  }
+  const first = hex.length === 16 ? hex.slice(4, 10) : hex.slice(0, 6);
+  const second = hex.length === 16 ? hex.slice(10, 16) : hex.slice(6, 12);
+  return `0200${Number.parseInt(first, 16).toString(10).padStart(8, "0")}${Number.parseInt(second, 16).toString(10).padStart(8, "0")}`;
+}
+
+function buildFelicaCardNumbers(idm, accessCode = "") {
+  const rawIdm = normalizeCardHex(idm);
+  const entries = [
+    [t("aime.cardNumber.accessCode"), accessCode],
+    [t("aime.cardNumber.minime"), deriveMinimeAccessCode(idm)],
+    [t("aime.cardNumber.zhou"), deriveZhouAccessCode(idm)],
+    [t("aime.cardNumber.konami"), encodeEpassCardId(rawIdm)],
+    [t("aime.cardNumber.idm"), rawIdm],
+  ];
+  return entries
+    .filter(([, value]) => value)
+    .map(([label, value]) => `${label}: ${value}`)
+    .join("\n");
+}
+
+function showFelicaCardNumbers(idm, cardInfo, accessCode = "") {
+  ui.aimeCardType.textContent = accessCode
+    ? t("aime.card.felicaAccessCode", { model: cardInfo.label })
+    : t("aime.card.felicaModel", { model: cardInfo.label });
+  ui.aimeCardValue.textContent = buildFelicaCardNumbers(idm, accessCode);
 }
 
 function parsePn532FelicaTarget(payload) {
@@ -4046,6 +4110,18 @@ async function connectHinataUsbReader() {
   }
 }
 
+async function connectSelectedAimeReader() {
+  const mode = ui.aimeReaderMode?.value || "aime-com";
+  if (mode === "hinata-sega") {
+    await connectHinataUsbReader();
+  } else {
+    await connectAimeReader();
+  }
+  if (aimeReaderAdapter?.connected) {
+    await aimeReaderAdapter.runProbe();
+  }
+}
+
 async function disconnectAimeReader() {
   if (aimeReaderAdapter) {
     await aimeReaderAdapter.disconnect();
@@ -4057,7 +4133,7 @@ async function disconnectAimeReader() {
 
 async function ensureAimeReaderConnected() {
   if (!aimeReaderAdapter?.connected) {
-    await connectAimeReader();
+    await connectSelectedAimeReader();
   }
   if (!aimeReaderAdapter?.connected) {
     throw new Error(t("aime.error.notConnected"));
@@ -4091,27 +4167,6 @@ async function scanAimeReaderTimed() {
     await adapter.runTimedReaderScan();
   } catch (error) {
     await aimeReaderAdapter?.setReaderLed?.([0xff, 0x00, 0x00], "scan-error", { silent: true }).catch(() => {});
-    setAimeReaderStatus(`Reader COM: ${error.message || String(error)}`, true);
-    appendAimeReaderLog(t("aime.log.error", { message: error.message || String(error) }));
-  }
-}
-
-async function flashAimeReaderLed() {
-  try {
-    const adapter = await ensureAimeReaderConnected();
-    await adapter.flashReaderLedWhite();
-  } catch (error) {
-    setAimeReaderStatus(`Reader COM: ${error.message || String(error)}`, true);
-    appendAimeReaderLog(t("aime.log.error", { message: error.message || String(error) }));
-  }
-}
-
-async function sendAimeReaderLedColor() {
-  try {
-    const adapter = await ensureAimeReaderConnected();
-    const rgb = hexToReaderRgb(ui.aimeReaderLedColor?.value || "#ffffff");
-    await adapter.setReaderLed(rgb, "manual");
-  } catch (error) {
     setAimeReaderStatus(`Reader COM: ${error.message || String(error)}`, true);
     appendAimeReaderLog(t("aime.log.error", { message: error.message || String(error) }));
   }
@@ -4295,43 +4350,15 @@ function bindActions() {
   });
 
   document.querySelector("#connect-aime-reader").addEventListener("click", () => {
-    connectAimeReader();
-  });
-
-  document.querySelector("#connect-hinata-reader").addEventListener("click", () => {
-    connectHinataReader();
-  });
-
-  document.querySelector("#connect-hinata-usb-reader").addEventListener("click", () => {
-    connectHinataUsbReader();
-  });
-
-  document.querySelector("#probe-aime-reader").addEventListener("click", () => {
-    runAimeReaderProbe();
+    connectSelectedAimeReader();
   });
 
   document.querySelector("#scan-aime-reader").addEventListener("click", () => {
     scanAimeReaderTimed();
   });
 
-  document.querySelector("#poll-aime-reader").addEventListener("click", () => {
-    pollAimeReaderOnce();
-  });
-
-  document.querySelector("#flash-aime-reader-led").addEventListener("click", () => {
-    flashAimeReaderLed();
-  });
-
-  document.querySelector("#send-aime-reader-led").addEventListener("click", () => {
-    sendAimeReaderLedColor();
-  });
-
   document.querySelector("#disconnect-aime-reader").addEventListener("click", () => {
     disconnectAimeReader();
-  });
-
-  document.querySelector("#clear-aime-reader-log").addEventListener("click", () => {
-    clearAimeReaderLog();
   });
 
   document.querySelector("#disconnect").addEventListener("click", () => {
