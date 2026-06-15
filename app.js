@@ -46,6 +46,9 @@ const SG_CMD_RESET = 0x62;
 const SG_LED_CMD_RESET = 0xf5;
 const SG_LED_CMD_GET_INFO = 0xf0;
 const HINATA_VENDOR_ID = 0xf822;
+const PN532_HOST_TO_DEVICE = 0xd4;
+const PN532_DEVICE_TO_HOST = 0xd5;
+const PN532_CMD_GET_FIRMWARE_VERSION = 0x02;
 const DEFAULT_LOCALE = "en-us";
 const SUPPORTED_LOCALES = ["zh-hk", "zh-cn", "zh-tw", "en-us", "ko-kr", "ja-jp"];
 const TASOLLER_OPTIONS_DBT_TRIGGER_PAYLOAD = Uint8Array.from([
@@ -1184,6 +1187,8 @@ class AimeReaderSerialAdapter {
     this.escaped = false;
     this.inFrame = false;
     this.commandQueue = Promise.resolve();
+    this.rawBytes = [];
+    this.pn532Waiters = [];
   }
 
   async connect(baudRate = AIME_READER_DEFAULT_BAUD) {
@@ -1253,6 +1258,11 @@ class AimeReaderSerialAdapter {
       clearTimeout(waiter.timer);
       waiter.reject(error);
     });
+    const pn532Waiters = this.pn532Waiters.splice(0);
+    pn532Waiters.forEach((waiter) => {
+      clearTimeout(waiter.timer);
+      waiter.reject(error);
+    });
   }
 
   async readLoop() {
@@ -1279,6 +1289,8 @@ class AimeReaderSerialAdapter {
   }
 
   consumeByte(byte) {
+    this.consumeRawByte(byte);
+
     if (byte === SG_SYNC) {
       this.inFrame = true;
       this.escaped = false;
@@ -1304,6 +1316,66 @@ class AimeReaderSerialAdapter {
       this.acceptFrame(this.decoded);
       this.inFrame = false;
       this.decoded = [];
+    }
+  }
+
+  consumeRawByte(byte) {
+    this.rawBytes.push(byte);
+    if (this.rawBytes.length > 512) {
+      this.rawBytes.splice(0, this.rawBytes.length - 512);
+    }
+    this.acceptPn532Packets();
+  }
+
+  acceptPn532Packets() {
+    while (this.rawBytes.length >= 6) {
+      const start = this.rawBytes.findIndex((value, index, bytes) =>
+        value === 0x00 && bytes[index + 1] === 0x00 && bytes[index + 2] === 0xff
+      );
+      if (start < 0) {
+        this.rawBytes.splice(0, Math.max(0, this.rawBytes.length - 2));
+        return;
+      }
+      if (start > 0) {
+        this.rawBytes.splice(0, start);
+      }
+      if (this.rawBytes.length < 6) {
+        return;
+      }
+      const length = this.rawBytes[3];
+      const lcs = this.rawBytes[4];
+      if (((length + lcs) & 0xff) !== 0) {
+        this.rawBytes.shift();
+        continue;
+      }
+      if (length === 0 && lcs === 0xff) {
+        appendAimeReaderLog("RX PN532 ACK");
+        this.rawBytes.splice(0, 6);
+        continue;
+      }
+      const total = 5 + length + 2;
+      if (this.rawBytes.length < total) {
+        return;
+      }
+      const packet = this.rawBytes.slice(0, total);
+      this.rawBytes.splice(0, total);
+      const direction = packet[5];
+      const responseCommand = ((packet[6] ?? 0) - 1) & 0xff;
+      const payload = packet.slice(7, 5 + length);
+      const dcs = packet[5 + length];
+      const checksum = packet.slice(5, 5 + length).reduce((sum, value) => (sum + value) & 0xff, 0);
+      if (direction !== PN532_DEVICE_TO_HOST || ((checksum + dcs) & 0xff) !== 0) {
+        appendAimeReaderLog(t("aime.log.badFrame", { hex: formatHex(packet) }));
+        continue;
+      }
+      appendAimeReaderLog(`RX PN532 cmd=${hexByte(responseCommand)} payload=${formatHex(payload) || "-"}`);
+      const waiterIndex = this.pn532Waiters.findIndex((waiter) => waiter.command === responseCommand);
+      if (waiterIndex < 0) {
+        continue;
+      }
+      const [waiter] = this.pn532Waiters.splice(waiterIndex, 1);
+      clearTimeout(waiter.timer);
+      waiter.resolve(payload);
     }
   }
 
@@ -1401,9 +1473,44 @@ class AimeReaderSerialAdapter {
     await this.writer.write(bytes);
   }
 
+  async sendPn532Command(command, payload = [], timeoutMs = 1200) {
+    if (!this.connected || !this.writer) {
+      throw new Error(t("aime.error.notConnected"));
+    }
+
+    const responsePromise = new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        const index = this.pn532Waiters.findIndex((waiter) => waiter.command === command);
+        if (index >= 0) {
+          this.pn532Waiters.splice(index, 1);
+        }
+        reject(new Error(t("aime.error.timeout", { cmd: `PN532 ${hexByte(command)}` })));
+      }, timeoutMs);
+      this.pn532Waiters.push({ command, resolve, reject, timer });
+    });
+
+    const packet = buildPn532Packet(command, payload);
+    appendAimeReaderLog(`TX PN532 cmd=${hexByte(command)} data=${formatHex(packet)}`);
+    await this.writeBytes(packet);
+    return responsePromise;
+  }
+
   async runProbe() {
     setAimeReaderStatusKey("aime.status.probing");
     clearAimeCardDisplay();
+
+    try {
+      await this.runSegaReaderProbe();
+      return;
+    } catch (error) {
+      appendAimeReaderLog(t("aime.log.segaProbeFallback", { message: error.message || String(error) }));
+    }
+
+    await this.runDirectPn532Probe();
+  }
+
+  async runSegaReaderProbe() {
+    setAimeReaderStatusKey("aime.status.probing");
 
     await this.sendCommand(SG_NFC_ADDR, SG_CMD_RESET, [], 1500).catch((error) => {
       appendAimeReaderLog(t("aime.log.resetWarning", { message: error.message || String(error) }));
@@ -1421,6 +1528,16 @@ class AimeReaderSerialAdapter {
     await this.sendCommand(SG_NFC_ADDR, SG_CMD_MIFARE_SET_KEY_A, asciiBytes("WCCFv2"), 1500).catch(() => {});
     await this.sendCommand(SG_NFC_ADDR, SG_CMD_MIFARE_SET_KEY_B, [0x60, 0x90, 0xd0, 0x06, 0x32, 0xf5], 1500).catch(() => {});
 
+    setAimeReaderStatusKey("aime.status.probeOk");
+  }
+
+  async runDirectPn532Probe() {
+    const payload = await this.sendPn532Command(PN532_CMD_GET_FIRMWARE_VERSION, [], 1800);
+    if (payload.length < 4) {
+      throw new Error(t("aime.error.pn532ShortFirmware"));
+    }
+    ui.aimeReaderFw.textContent = `PN532 IC=${hexByte(payload[0])} FW=${payload[1]}.${payload[2]} support=${hexByte(payload[3])}`;
+    ui.aimeReaderHw.textContent = "Direct PN532";
     setAimeReaderStatusKey("aime.status.probeOk");
   }
 
@@ -2336,6 +2453,24 @@ function encodeSgFrame(frame) {
     }
   });
   return Uint8Array.from(encoded);
+}
+
+function buildPn532Packet(command, payload = []) {
+  const data = Array.from(payload);
+  const length = data.length + 2;
+  const packet = [
+    0x00,
+    0x00,
+    0xff,
+    length,
+    (-length) & 0xff,
+    PN532_HOST_TO_DEVICE,
+    command,
+    ...data,
+  ];
+  const dcs = (-(packet.slice(5).reduce((sum, value) => (sum + value) & 0xff, 0)) & 0xff);
+  packet.push(dcs, 0x00);
+  return Uint8Array.from(packet);
 }
 
 function sgCommandName(cmd) {

@@ -138,5 +138,7 @@
   "aime.error.hidWriteFailed": "Hinata HID write failed",
   "aime.log.hinataFirmware": "Hinata firmware report: {firmware}",
   "aime.log.hinataHidConnected": "Hinata HID connected: {name}",
-  "aime.log.hinataFirmwareFailed": "Hinata firmware probe failed: {message}"
+  "aime.log.hinataFirmwareFailed": "Hinata firmware probe failed: {message}",
+  "aime.log.segaProbeFallback": "SEGA reader probe failed, trying direct PN532: {message}",
+  "aime.error.pn532ShortFirmware": "PN532 firmware response was too short"
 }
