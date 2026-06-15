@@ -38,20 +38,33 @@ const SG_CMD_GET_HW_VERSION = 0x32;
 const SG_CMD_RADIO_ON = 0x40;
 const SG_CMD_POLL = 0x42;
 const SG_CMD_MIFARE_SELECT_TAG = 0x43;
-const SG_CMD_MIFARE_SET_KEY_A = 0x54;
-const SG_CMD_MIFARE_SET_KEY_B = 0x50;
-const SG_CMD_MIFARE_AUTHENTICATE = 0x55;
+const SG_CMD_MIFARE_SET_KEY_A = 0x50;
+const SG_CMD_MIFARE_AUTHENTICATE_A = 0x51;
 const SG_CMD_MIFARE_READ_BLOCK = 0x52;
+const SG_CMD_MIFARE_SET_KEY_B = 0x54;
+const SG_CMD_MIFARE_AUTHENTICATE_B = 0x55;
 const SG_CMD_RESET = 0x62;
+const SG_CMD_FELICA_ENCAP = 0x71;
 const SG_LED_CMD_RESET = 0xf5;
 const SG_LED_CMD_GET_INFO = 0xf0;
 const HINATA_VENDOR_ID = 0xf822;
 const HINATA_REPORT_ID = 0x01;
 const HINATA_CMD_PN532 = 0xe2;
 const HINATA_CMD_FW = 0x01;
+const FELICA_CMD_READ_WITHOUT_ENCRYPTION = 0x06;
+const FELICA_CMD_READ_WITHOUT_ENCRYPTION_RESPONSE = 0x07;
+const FELICA_LITES_READ_ONLY_SERVICE = 0x000b;
+const AICC_FELICA_MANUFACTURER = [0x01, 0x2e];
+const AICC_FELICA_SUPPORTED_OS_VERSIONS = new Set([
+  0x06, 0x07, 0x10, 0x12, 0x13, 0x14, 0x15, 0x17, 0x18,
+  0x20, 0xf0, 0xf1, 0xf2, 0xf3, 0xf4, 0xf5, 0xf6, 0xf7,
+]);
 const PN532_HOST_TO_DEVICE = 0xd4;
 const PN532_DEVICE_TO_HOST = 0xd5;
 const PN532_CMD_GET_FIRMWARE_VERSION = 0x02;
+const PN532_CMD_SAM_CONFIGURATION = 0x14;
+const PN532_CMD_IN_DATA_EXCHANGE = 0x40;
+const PN532_CMD_IN_LIST_PASSIVE_TARGET = 0x4a;
 const DEFAULT_LOCALE = "en-us";
 const SUPPORTED_LOCALES = ["zh-hk", "zh-cn", "zh-tw", "en-us", "ko-kr", "ja-jp"];
 const TASOLLER_OPTIONS_DBT_TRIGGER_PAYLOAD = Uint8Array.from([
@@ -1192,6 +1205,7 @@ class AimeReaderSerialAdapter {
     this.commandQueue = Promise.resolve();
     this.rawBytes = [];
     this.pn532Waiters = [];
+    this.protocol = "sega";
   }
 
   async connect(baudRate = AIME_READER_DEFAULT_BAUD) {
@@ -1520,6 +1534,7 @@ class AimeReaderSerialAdapter {
     });
 
     const fw = await this.sendCommand(SG_NFC_ADDR, SG_CMD_GET_FW_VERSION);
+    this.protocol = "sega";
     ui.aimeReaderFw.textContent = decodeReaderVersion(fw.payload);
 
     const hw = await this.sendCommand(SG_NFC_ADDR, SG_CMD_GET_HW_VERSION);
@@ -1528,8 +1543,8 @@ class AimeReaderSerialAdapter {
     await this.sendCommand(SG_LED_ADDR, SG_LED_CMD_RESET, [], 1500).catch(() => {});
     await this.sendCommand(SG_LED_ADDR, SG_LED_CMD_GET_INFO, [], 1500).catch(() => {});
     await this.sendCommand(SG_NFC_ADDR, SG_CMD_RADIO_ON, [0x03], 1500).catch(() => {});
-    await this.sendCommand(SG_NFC_ADDR, SG_CMD_MIFARE_SET_KEY_A, asciiBytes("WCCFv2"), 1500).catch(() => {});
-    await this.sendCommand(SG_NFC_ADDR, SG_CMD_MIFARE_SET_KEY_B, [0x60, 0x90, 0xd0, 0x06, 0x32, 0xf5], 1500).catch(() => {});
+    await this.sendCommand(SG_NFC_ADDR, SG_CMD_MIFARE_SET_KEY_B, asciiBytes("WCCFv2"), 1500).catch(() => {});
+    await this.sendCommand(SG_NFC_ADDR, SG_CMD_MIFARE_SET_KEY_A, [0x60, 0x90, 0xd0, 0x06, 0x32, 0xf5], 1500).catch(() => {});
 
     setAimeReaderStatusKey("aime.status.probeOk");
   }
@@ -1541,10 +1556,16 @@ class AimeReaderSerialAdapter {
     }
     ui.aimeReaderFw.textContent = `PN532 IC=${hexByte(payload[0])} FW=${payload[1]}.${payload[2]} support=${hexByte(payload[3])}`;
     ui.aimeReaderHw.textContent = "Direct PN532";
+    this.protocol = "pn532";
     setAimeReaderStatusKey("aime.status.probeOk");
   }
 
   async pollCardOnce() {
+    if (this.protocol === "pn532") {
+      await this.pollDirectPn532CardOnce();
+      return;
+    }
+
     setAimeReaderStatusKey("aime.status.polling");
     const response = await this.sendCommand(SG_NFC_ADDR, SG_CMD_POLL, [], 1800);
     const parsed = parseSgPollPayload(response.payload);
@@ -1563,14 +1584,80 @@ class AimeReaderSerialAdapter {
       return;
     }
 
-    ui.aimeCardType.textContent = "FeliCa";
+    const cardInfo = describeFelicaCard(parsed.idm, parsed.pmm);
+    ui.aimeCardType.textContent = `FeliCa / ${cardInfo.label}`;
     ui.aimeCardValue.textContent = `IDm ${formatHex(parsed.idm)} / PMm ${formatHex(parsed.pmm)}`;
+    appendAimeReaderLog(`FeliCa card ${cardInfo.valid ? "valid" : "unsupported"}: ${cardInfo.reason}`);
+    await this.readFelicaSpad0(parsed.idm, parsed.pmm, cardInfo);
+    setAimeReaderStatusKey("aime.status.cardFound");
+  }
+
+  async readFelicaSpad0(idm, pmm, cardInfo = describeFelicaCard(idm, pmm)) {
+    try {
+      const response = await this.sendCommand(
+        SG_NFC_ADDR,
+        SG_CMD_FELICA_ENCAP,
+        buildFelicaEncapPayload(idm, buildFelicaReadWithoutEncryption(idm, FELICA_LITES_READ_ONLY_SERVICE, 0)),
+        1800,
+      );
+      const spad0 = parseFelicaReadWithoutEncryptionResponse(response.payload, idm);
+      const accessCode = extractValidatedAccessCode(spad0);
+      appendAimeReaderLog(`FeliCa SPAD0 service=0x000b block=0 data=${formatHex(spad0)}`);
+      if (accessCode) {
+        ui.aimeCardType.textContent = `FeliCa / ${cardInfo.label} / Access Code`;
+        ui.aimeCardValue.textContent = accessCode;
+      } else {
+        ui.aimeCardType.textContent = `FeliCa / ${cardInfo.label} / SPAD0`;
+        ui.aimeCardValue.textContent = `IDm ${formatHex(idm)} / SPAD0 ${formatHex(spad0)}`;
+        appendAimeReaderLog("FeliCa SPAD0 did not contain a valid 20-digit BCD access code candidate");
+      }
+    } catch (error) {
+      appendAimeReaderLog(`FeliCa SPAD0 read failed: ${error.message || String(error)}`);
+    }
+  }
+
+  async pollDirectPn532CardOnce() {
+    setAimeReaderStatusKey("aime.status.polling");
+    await this.sendPn532Command(PN532_CMD_SAM_CONFIGURATION, [0x01, 0x14, 0x01], 1800).catch(() => {});
+    const poll = await this.sendPn532Command(
+      PN532_CMD_IN_LIST_PASSIVE_TARGET,
+      [0x01, 0x01, 0xff, 0xff, 0x01, 0x00],
+      2200,
+    );
+    const parsed = parsePn532FelicaTarget(poll);
+    if (!parsed) {
+      throw new Error(`PN532 FeliCa target not found: ${formatHex(poll) || "-"}`);
+    }
+
+    const cardInfo = describeFelicaCard(parsed.idm, parsed.pmm);
+    appendAimeReaderLog(`PN532 FeliCa card ${cardInfo.valid ? "valid" : "unsupported"}: ${cardInfo.reason}`);
+    ui.aimeCardType.textContent = `FeliCa / ${cardInfo.label}`;
+    ui.aimeCardValue.textContent = `IDm ${formatHex(parsed.idm)} / PMm ${formatHex(parsed.pmm)}`;
+
+    const inner = buildFelicaReadWithoutEncryption(parsed.idm, FELICA_LITES_READ_ONLY_SERVICE, 0);
+    const dataExchange = await this.sendPn532Command(PN532_CMD_IN_DATA_EXCHANGE, [parsed.target, ...inner], 2200);
+    if (dataExchange[0] !== 0) {
+      throw new Error(`PN532 data exchange status ${hexByte(dataExchange[0] ?? 0)}`);
+    }
+    const spad0 = parseFelicaReadWithoutEncryptionResponse(dataExchange.slice(1), parsed.idm);
+    const accessCode = extractValidatedAccessCode(spad0);
+    appendAimeReaderLog(`PN532 FeliCa SPAD0 service=0x000b block=0 data=${formatHex(spad0)}`);
+    if (accessCode) {
+      ui.aimeCardType.textContent = `FeliCa / ${cardInfo.label} / Access Code`;
+      ui.aimeCardValue.textContent = accessCode;
+    } else {
+      ui.aimeCardType.textContent = `FeliCa / ${cardInfo.label} / SPAD0`;
+      ui.aimeCardValue.textContent = `IDm ${formatHex(parsed.idm)} / SPAD0 ${formatHex(spad0)}`;
+    }
     setAimeReaderStatusKey("aime.status.cardFound");
   }
 
   async readMifareDetails(uid) {
-    await this.sendCommand(SG_NFC_ADDR, SG_CMD_MIFARE_SELECT_TAG, uid, 1500).catch(() => {});
-    await this.sendCommand(SG_NFC_ADDR, SG_CMD_MIFARE_AUTHENTICATE, [...uid, 0x03], 1500).catch(() => {});
+    const authenticated = await this.authenticateMifareSector(uid, 0);
+    if (!authenticated) {
+      appendAimeReaderLog("MIFARE auth failed for sector 0");
+      return;
+    }
 
     const blocks = [];
     for (const blockNo of [1, 2]) {
@@ -1595,6 +1682,43 @@ class AimeReaderSerialAdapter {
       ui.aimeCardType.textContent = "MIFARE / Aime";
       ui.aimeCardValue.textContent = accessCode || formatHex(accessBytes);
     }
+  }
+
+  async authenticateMifareSector(uid, blockNo) {
+    const attempts = [
+      {
+        setKeyCommand: SG_CMD_MIFARE_SET_KEY_B,
+        authCommand: SG_CMD_MIFARE_AUTHENTICATE_B,
+        key: asciiBytes("WCCFv2"),
+        label: "WCCFv2 Key B",
+      },
+      {
+        setKeyCommand: SG_CMD_MIFARE_SET_KEY_A,
+        authCommand: SG_CMD_MIFARE_AUTHENTICATE_A,
+        key: [0x60, 0x90, 0xd0, 0x06, 0x32, 0xf5],
+        label: "Banapass Key A",
+      },
+      {
+        setKeyCommand: SG_CMD_MIFARE_SET_KEY_A,
+        authCommand: SG_CMD_MIFARE_AUTHENTICATE_A,
+        key: [0xff, 0xff, 0xff, 0xff, 0xff, 0xff],
+        label: "Default Key A",
+      },
+    ];
+
+    for (const attempt of attempts) {
+      try {
+        await this.sendCommand(SG_NFC_ADDR, attempt.setKeyCommand, attempt.key, 1500);
+        await this.sendCommand(SG_NFC_ADDR, SG_CMD_MIFARE_SELECT_TAG, uid, 1500);
+        await this.sendCommand(SG_NFC_ADDR, attempt.authCommand, [...uid, blockNo], 1500);
+        appendAimeReaderLog(`MIFARE auth OK: ${attempt.label}`);
+        return true;
+      } catch (error) {
+        appendAimeReaderLog(`MIFARE auth failed: ${attempt.label} (${error.message || String(error)})`);
+      }
+    }
+
+    return false;
   }
 }
 
@@ -2746,6 +2870,13 @@ function asciiBytes(text) {
   return Array.from(text, (char) => char.charCodeAt(0) & 0xff);
 }
 
+function arraysEqual(left, right) {
+  if (!left || !right || left.length !== right.length) {
+    return false;
+  }
+  return left.every((value, index) => value === right[index]);
+}
+
 function decodeReaderVersion(bytes) {
   if (!bytes?.length) {
     return "-";
@@ -2794,6 +2925,137 @@ function buildPn532Packet(command, payload = []) {
   const dcs = (-(packet.slice(5).reduce((sum, value) => (sum + value) & 0xff, 0)) & 0xff);
   packet.push(dcs, 0x00);
   return Uint8Array.from(packet);
+}
+
+function buildFelicaEncapPayload(idm, felicaFrame) {
+  return [...idm, ...felicaFrame];
+}
+
+function buildFelicaReadWithoutEncryption(idm, serviceCode, blockNo) {
+  return [
+    0x10,
+    FELICA_CMD_READ_WITHOUT_ENCRYPTION,
+    ...idm,
+    0x01,
+    serviceCode & 0xff,
+    (serviceCode >> 8) & 0xff,
+    0x01,
+    0x80,
+    blockNo & 0xff,
+  ];
+}
+
+function parseFelicaReadWithoutEncryptionResponse(payload, expectedIdm) {
+  if (!payload?.length) {
+    throw new Error("empty FeliCa response");
+  }
+
+  const length = payload[0];
+  const frame = payload.slice(0, length || payload.length);
+  if (frame.length < 13) {
+    throw new Error("short FeliCa response");
+  }
+  if (frame[1] !== FELICA_CMD_READ_WITHOUT_ENCRYPTION_RESPONSE) {
+    throw new Error(`unexpected FeliCa response ${hexByte(frame[1])}`);
+  }
+  if (!arraysEqual(frame.slice(2, 10), expectedIdm)) {
+    throw new Error("FeliCa IDm mismatch");
+  }
+  if (frame[10] !== 0 || frame[11] !== 0) {
+    throw new Error(`FeliCa status ${formatHex(frame.slice(10, 12))}`);
+  }
+
+  const blockCount = frame[12];
+  if (blockCount < 1 || frame.length < 13 + 16 * blockCount) {
+    throw new Error("FeliCa block data truncated");
+  }
+
+  return frame.slice(13, 29);
+}
+
+function describeFelicaCard(idm, pmm) {
+  const manufacturerOk = arraysEqual(idm?.slice(0, 2), AICC_FELICA_MANUFACTURER);
+  const osVersion = pmm?.[1];
+  const osLabel = felicaOsVersionLabel(osVersion);
+  const valid = manufacturerOk && AICC_FELICA_SUPPORTED_OS_VERSIONS.has(osVersion);
+  const label = osLabel || `OS ${hexByte(osVersion ?? 0)}`;
+  const reason = [
+    manufacturerOk ? "AICC manufacturer 01:2e" : `non-AICC manufacturer ${formatHex(idm?.slice(0, 2) ?? [])}`,
+    osLabel ? `PMm OS ${hexByte(osVersion)} ${osLabel}` : `unsupported PMm OS ${hexByte(osVersion ?? 0)}`,
+  ].join(", ");
+
+  return { valid, label, reason };
+}
+
+function felicaOsVersionLabel(osVersion) {
+  switch (osVersion) {
+    case 0x06:
+    case 0x07:
+      return "Mobile FeliCa v1";
+    case 0x10:
+    case 0x12:
+    case 0x13:
+      return "Mobile FeliCa v2";
+    case 0x14:
+    case 0x15:
+      return "Mobile FeliCa v3";
+    case 0x17:
+      return "Mobile FeliCa v4";
+    case 0x18:
+      return "Mobile FeliCa v4.1";
+    case 0x20:
+      return "FeliCa STD RC-S962";
+    case 0xf0:
+      return "FeliCa Lite RC-S965";
+    case 0xf1:
+      return "FeliCa Lite-S RC-S966";
+    case 0xf2:
+      return "FeliCa Link Lite-S RC-S967";
+    case 0xf3:
+    case 0xf4:
+    case 0xf5:
+    case 0xf6:
+    case 0xf7:
+      return "Unknown AICC FeliCa";
+    default:
+      return "";
+  }
+}
+
+function extractValidatedAccessCode(block) {
+  for (let offset = 0; offset <= block.length - 10; offset++) {
+    const candidate = block.slice(offset, offset + 10);
+    const text = bcdBytesToText(candidate);
+    if (isValidAccessCode(text)) {
+      return text;
+    }
+  }
+  return "";
+}
+
+function isValidAccessCode(text) {
+  return /^\d{20}$/.test(text);
+}
+
+function parsePn532FelicaTarget(payload) {
+  if (!payload?.length || payload[0] < 1) {
+    return null;
+  }
+
+  const target = payload[1] || 1;
+  for (let offset = 2; offset <= payload.length - 18; offset++) {
+    const commandOffset = payload[offset] === 0x01 ? offset : payload[offset + 1] === 0x01 ? offset + 1 : -1;
+    if (commandOffset < 0 || commandOffset + 17 >= payload.length) {
+      continue;
+    }
+    return {
+      target,
+      idm: payload.slice(commandOffset + 1, commandOffset + 9),
+      pmm: payload.slice(commandOffset + 9, commandOffset + 17),
+    };
+  }
+
+  return null;
 }
 
 function decodeSgResponseBytes(rawBytes) {
@@ -2899,14 +3161,18 @@ function sgCommandName(cmd) {
       return "MIFARE_SELECT";
     case SG_CMD_MIFARE_SET_KEY_A:
       return "MIFARE_KEY_A";
+    case SG_CMD_MIFARE_AUTHENTICATE_A:
+      return "MIFARE_AUTH_A";
     case SG_CMD_MIFARE_SET_KEY_B:
       return "MIFARE_KEY_B";
-    case SG_CMD_MIFARE_AUTHENTICATE:
-      return "MIFARE_AUTH";
+    case SG_CMD_MIFARE_AUTHENTICATE_B:
+      return "MIFARE_AUTH_B";
     case SG_CMD_MIFARE_READ_BLOCK:
       return "MIFARE_READ";
     case SG_CMD_RESET:
       return "RESET";
+    case SG_CMD_FELICA_ENCAP:
+      return "FELICA_ENCAP";
     case SG_LED_CMD_RESET:
       return "LED_RESET";
     case SG_LED_CMD_GET_INFO:
