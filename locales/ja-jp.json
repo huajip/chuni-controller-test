@@ -140,5 +140,11 @@
   "aime.log.hinataHidConnected": "Hinata HID connected: {name}",
   "aime.log.hinataFirmwareFailed": "Hinata firmware probe failed: {message}",
   "aime.log.segaProbeFallback": "SEGA reader probe failed, trying direct PN532: {message}",
-  "aime.error.pn532ShortFirmware": "PN532 firmware response was too short"
+  "aime.error.pn532ShortFirmware": "PN532 firmware response was too short",
+  "action.connectHinataUsbReader": "Connect Hinata WebUSB Reader Mode",
+  "aime.error.noHinataEndpoints": "No usable Hinata USB reader endpoints were found",
+  "aime.log.hinataUsbConnected": "Hinata WebUSB connected: {name} ({mode})",
+  "aime.log.usbClaimFailed": "USB interface {iface} claim failed: {message}",
+  "aime.log.usbProbePair": "Probing USB endpoints OUT {out} / IN {in}",
+  "aime.log.usbProbeFailed": "{mode} probe failed: {message}"
 }

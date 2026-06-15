@@ -46,6 +46,9 @@ const SG_CMD_RESET = 0x62;
 const SG_LED_CMD_RESET = 0xf5;
 const SG_LED_CMD_GET_INFO = 0xf0;
 const HINATA_VENDOR_ID = 0xf822;
+const HINATA_REPORT_ID = 0x01;
+const HINATA_CMD_PN532 = 0xe2;
+const HINATA_CMD_FW = 0x01;
 const PN532_HOST_TO_DEVICE = 0xd4;
 const PN532_DEVICE_TO_HOST = 0xd5;
 const PN532_CMD_GET_FIRMWARE_VERSION = 0x02;
@@ -1712,6 +1715,326 @@ class HinataHidReaderAdapter extends AimeReaderSerialAdapter {
   }
 }
 
+class HinataUsbReaderAdapter extends AimeReaderSerialAdapter {
+  constructor() {
+    super();
+    this.device = null;
+    this.inputEndpoint = null;
+    this.outputEndpoint = null;
+    this.outputPacketSize = 64;
+    this.claimedInterfaceNumbers = [];
+    this.protocol = "unknown";
+  }
+
+  async connect() {
+    if (!("usb" in navigator)) {
+      throw new Error(t("error.webusbUnsupported"));
+    }
+
+    this.device = await navigator.usb.requestDevice({
+      filters: [{ vendorId: HINATA_VENDOR_ID }],
+    });
+    if (!this.device) {
+      throw new Error(t("aime.error.noHinata"));
+    }
+
+    await this.device.open();
+    if (this.device.configuration === null) {
+      await this.device.selectConfiguration(1);
+    }
+
+    const candidates = await this.claimCandidateEndpoints();
+    if (!candidates.read.length || !candidates.write.length) {
+      throw new Error(t("aime.error.noHinataEndpoints"));
+    }
+
+    await this.probeEndpointPairs(candidates);
+    this.connected = true;
+    setAimeReaderStatusKey("aime.status.connected");
+    appendAimeReaderLog(t("aime.log.hinataUsbConnected", {
+      name: this.device.productName || "Hinata",
+      mode: this.protocol,
+    }));
+    this.readLoopPromise = this.readLoop();
+  }
+
+  async claimCandidateEndpoints() {
+    const read = [];
+    const write = [];
+    const claimed = new Set();
+    const interfaces = this.device.configuration?.interfaces ?? [];
+
+    for (const usbInterface of interfaces) {
+      for (const alternate of usbInterface.alternates ?? []) {
+        const ifaceClass = alternate.interfaceClass;
+        const preferred = ifaceClass === 0x03 ||
+          ifaceClass === 0xff ||
+          ifaceClass === 0x02 ||
+          ifaceClass === 0x0a;
+        if (!preferred) {
+          continue;
+        }
+
+        if (!claimed.has(usbInterface.interfaceNumber)) {
+          try {
+            await this.device.claimInterface(usbInterface.interfaceNumber);
+            claimed.add(usbInterface.interfaceNumber);
+            this.claimedInterfaceNumbers.push(usbInterface.interfaceNumber);
+          } catch (error) {
+            appendAimeReaderLog(t("aime.log.usbClaimFailed", {
+              iface: usbInterface.interfaceNumber,
+              message: error.message || String(error),
+            }));
+            continue;
+          }
+        }
+
+        for (const endpoint of alternate.endpoints ?? []) {
+          if (endpoint.type !== "bulk" && endpoint.type !== "interrupt") {
+            continue;
+          }
+          const candidate = {
+            interfaceNumber: usbInterface.interfaceNumber,
+            endpointNumber: endpoint.endpointNumber,
+            direction: endpoint.direction,
+            type: endpoint.type,
+            packetSize: endpoint.packetSize || 64,
+          };
+          if (endpoint.direction === "in") {
+            read.push(candidate);
+          } else if (endpoint.direction === "out") {
+            write.push(candidate);
+          }
+        }
+      }
+    }
+
+    return { read, write };
+  }
+
+  async probeEndpointPairs(candidates) {
+    for (const outEndpoint of candidates.write) {
+      for (const inEndpoint of candidates.read) {
+        appendAimeReaderLog(t("aime.log.usbProbePair", {
+          out: outEndpoint.endpointNumber,
+          in: inEndpoint.endpointNumber,
+        }));
+
+        const hinataFw = await this.tryHinataFirmwareEndpoint(outEndpoint, inEndpoint);
+        if (hinataFw) {
+          this.selectEndpoints(outEndpoint, inEndpoint, "hinata-pn532");
+          ui.aimeReaderFw.textContent = `Hinata ${hinataFw}`;
+          ui.aimeReaderHw.textContent = "Hinata USB";
+          return;
+        }
+
+        const directPn532 = await this.tryDirectPn532Endpoint(outEndpoint, inEndpoint);
+        if (directPn532) {
+          this.selectEndpoints(outEndpoint, inEndpoint, "direct-pn532");
+          ui.aimeReaderFw.textContent = directPn532;
+          ui.aimeReaderHw.textContent = "Direct PN532 USB";
+          return;
+        }
+
+        const sega = await this.trySegaEndpoint(outEndpoint, inEndpoint);
+        if (sega) {
+          this.selectEndpoints(outEndpoint, inEndpoint, "sega-reader");
+          ui.aimeReaderFw.textContent = sega;
+          return;
+        }
+      }
+    }
+
+    throw new Error(t("aime.error.noHinataEndpoints"));
+  }
+
+  selectEndpoints(outEndpoint, inEndpoint, protocol) {
+    this.outputEndpoint = outEndpoint;
+    this.inputEndpoint = inEndpoint;
+    this.outputPacketSize = outEndpoint.packetSize || 64;
+    this.protocol = protocol;
+  }
+
+  async tryHinataFirmwareEndpoint(outEndpoint, inEndpoint) {
+    try {
+      const probe = this.padUsbPacket(Uint8Array.from([HINATA_REPORT_ID, HINATA_CMD_FW]), outEndpoint.packetSize);
+      await this.transferOut(outEndpoint, probe);
+      const bytes = await this.transferIn(inEndpoint, 1200);
+      appendAimeReaderLog(`RX USB data=${formatHex(bytes)}`);
+      if (bytes[0] === 0x03) {
+        const firmware = extractHinataFirmware(bytes.slice(1));
+        if (firmware) {
+          return firmware;
+        }
+      }
+    } catch (error) {
+      appendAimeReaderLog(t("aime.log.usbProbeFailed", {
+        mode: "Hinata FW",
+        message: error.message || String(error),
+      }));
+    }
+    return "";
+  }
+
+  async tryDirectPn532Endpoint(outEndpoint, inEndpoint) {
+    try {
+      const packet = buildPn532Packet(PN532_CMD_GET_FIRMWARE_VERSION, []);
+      await this.transferOut(outEndpoint, packet);
+      const bytes = await this.transferIn(inEndpoint, 1200);
+      appendAimeReaderLog(`RX USB PN532 data=${formatHex(bytes)}`);
+      const payload = extractPn532ResponsePayload(bytes, PN532_CMD_GET_FIRMWARE_VERSION);
+      if (payload.length >= 4) {
+        return `PN532 IC=${hexByte(payload[0])} FW=${payload[1]}.${payload[2]} support=${hexByte(payload[3])}`;
+      }
+    } catch (error) {
+      appendAimeReaderLog(t("aime.log.usbProbeFailed", {
+        mode: "Direct PN532",
+        message: error.message || String(error),
+      }));
+    }
+    return "";
+  }
+
+  async trySegaEndpoint(outEndpoint, inEndpoint) {
+    try {
+      const frame = encodeSgFrame([5, SG_NFC_ADDR, 0, SG_CMD_GET_FW_VERSION, 0]);
+      await this.transferOut(outEndpoint, frame);
+      const bytes = await this.transferIn(inEndpoint, 1200);
+      appendAimeReaderLog(`RX USB SEGA data=${formatHex(bytes)}`);
+      const decoded = decodeSgResponseBytes(bytes);
+      if (decoded.cmd === SG_CMD_GET_FW_VERSION && decoded.status === 0) {
+        return decodeReaderVersion(decoded.payload) || "SEGA Reader";
+      }
+    } catch (error) {
+      appendAimeReaderLog(t("aime.log.usbProbeFailed", {
+        mode: "SEGA reader",
+        message: error.message || String(error),
+      }));
+    }
+    return "";
+  }
+
+  padUsbPacket(bytes, packetSize = 64) {
+    const size = Math.max(packetSize || 64, bytes.length);
+    const padded = new Uint8Array(size);
+    padded.set(bytes);
+    return padded;
+  }
+
+  async transferOut(endpoint, bytes) {
+    const result = await this.device.transferOut(endpoint.endpointNumber, bytes);
+    if (result.status !== "ok") {
+      throw new Error(`transferOut ${result.status}`);
+    }
+  }
+
+  async transferIn(endpoint, timeoutMs = 1000) {
+    const transfer = this.device.transferIn(endpoint.endpointNumber, endpoint.packetSize || 64);
+    const timeout = new Promise((_resolve, reject) => {
+      setTimeout(() => reject(new Error("USB read timeout")), timeoutMs);
+    });
+    const result = await Promise.race([transfer, timeout]);
+    if (result.status !== "ok" || !result.data) {
+      throw new Error(`transferIn ${result.status}`);
+    }
+    return Array.from(new Uint8Array(result.data.buffer.slice(0, result.data.byteLength)));
+  }
+
+  async readLoop() {
+    while (this.connected && this.device && this.inputEndpoint) {
+      try {
+        const bytes = await this.transferIn(this.inputEndpoint, 5000);
+        this.consumeUsbBytes(bytes);
+      } catch (error) {
+        if (this.connected && !String(error.message || error).includes("timeout")) {
+          setAimeReaderStatus(t("aime.error.read", { message: error.message || String(error) }), true);
+        }
+      }
+    }
+    this.connected = false;
+  }
+
+  consumeUsbBytes(bytes) {
+    if (bytes[0] === 0x03) {
+      const firmware = extractHinataFirmware(bytes.slice(1));
+      if (firmware) {
+        appendAimeReaderLog(t("aime.log.hinataFirmware", { firmware }));
+        return;
+      }
+    }
+
+    if (this.protocol === "hinata-pn532" && bytes[1] === HINATA_CMD_PN532) {
+      appendAimeReaderLog(`RX USB Hinata PN532 data=${formatHex(bytes)}`);
+      bytes.slice(2).forEach((byte) => this.consumeRawByte(byte));
+      return;
+    }
+
+    appendAimeReaderLog(`RX USB data=${formatHex(bytes)}`);
+    bytes.forEach((byte) => this.consumeByte(byte));
+  }
+
+  async writeBytes(bytes) {
+    if (!this.connected || !this.outputEndpoint) {
+      throw new Error(t("aime.error.notConnected"));
+    }
+    await this.transferOut(this.outputEndpoint, bytes);
+  }
+
+  async sendPn532Command(command, payload = [], timeoutMs = 1200) {
+    const responsePromise = new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        const index = this.pn532Waiters.findIndex((waiter) => waiter.command === command);
+        if (index >= 0) {
+          this.pn532Waiters.splice(index, 1);
+        }
+        reject(new Error(t("aime.error.timeout", {
+          cmd: `${this.protocol === "hinata-pn532" ? "Hinata " : ""}PN532 ${hexByte(command)}`,
+        })));
+      }, timeoutMs);
+      this.pn532Waiters.push({ command, resolve, reject, timer });
+    });
+
+    const pn532Packet = buildPn532Packet(command, payload);
+    const packet = this.protocol === "hinata-pn532"
+      ? Uint8Array.from([HINATA_REPORT_ID, HINATA_CMD_PN532, ...pn532Packet])
+      : pn532Packet;
+    appendAimeReaderLog(`TX USB PN532 cmd=${hexByte(command)} data=${formatHex(packet)}`);
+    await this.writeBytes(packet);
+    return responsePromise;
+  }
+
+  async disconnect() {
+    this.connected = false;
+    this.rejectWaiters(new Error(t("aime.error.disconnected")));
+
+    if (this.readLoopPromise) {
+      try {
+        await this.readLoopPromise;
+      } catch (_error) {
+      }
+      this.readLoopPromise = null;
+    }
+
+    if (this.device) {
+      for (const interfaceNumber of this.claimedInterfaceNumbers) {
+        try {
+          await this.device.releaseInterface(interfaceNumber);
+        } catch (_error) {
+        }
+      }
+      if (this.device.opened) {
+        await this.device.close();
+      }
+      this.device = null;
+    }
+
+    this.claimedInterfaceNumbers = [];
+    this.inputEndpoint = null;
+    this.outputEndpoint = null;
+    setAimeReaderStatusKey("aime.status.disconnected");
+  }
+}
+
 class TouchSerialAdapter {
   constructor() {
     this.port = null;
@@ -2473,6 +2796,95 @@ function buildPn532Packet(command, payload = []) {
   return Uint8Array.from(packet);
 }
 
+function decodeSgResponseBytes(rawBytes) {
+  const raw = Array.from(rawBytes);
+  const sync = raw.indexOf(SG_SYNC);
+  if (sync < 0) {
+    throw new Error("SEGA frame missing sync");
+  }
+
+  const plain = [];
+  let escaped = false;
+  for (let index = sync + 1; index < raw.length; index++) {
+    let value = raw[index];
+    if (escaped) {
+      value = (value + 1) & 0xff;
+      escaped = false;
+    } else if (value === SG_ESCAPE) {
+      escaped = true;
+      continue;
+    } else if (value === SG_SYNC) {
+      break;
+    }
+    plain.push(value);
+    if (plain.length > 0 && plain.length === plain[0] + 1) {
+      break;
+    }
+  }
+
+  if (plain.length < 7) {
+    throw new Error("SEGA frame too short");
+  }
+  const frameLength = plain[0];
+  if (plain.length !== frameLength + 1) {
+    throw new Error("SEGA frame length mismatch");
+  }
+  const frame = plain.slice(0, -1);
+  const expected = plain[plain.length - 1];
+  const checksum = frame.reduce((sum, value) => (sum + value) & 0xff, 0);
+  if (checksum !== expected) {
+    throw new Error("SEGA frame checksum mismatch");
+  }
+  const payloadLength = frame[5] ?? 0;
+  if (frame.length < 6 + payloadLength) {
+    throw new Error("SEGA frame payload truncated");
+  }
+  return {
+    frameLength,
+    addr: frame[1],
+    seq: frame[2],
+    cmd: frame[3],
+    status: frame[4],
+    payloadLength,
+    payload: frame.slice(6, 6 + payloadLength),
+    frame,
+  };
+}
+
+function extractPn532ResponsePayload(rawBytes, expectedCommand) {
+  const raw = Array.from(rawBytes);
+  for (let offset = 0; offset <= raw.length - 6; offset++) {
+    if (raw[offset] !== 0x00 || raw[offset + 1] !== 0x00 || raw[offset + 2] !== 0xff) {
+      continue;
+    }
+    const length = raw[offset + 3];
+    const lcs = raw[offset + 4];
+    if (((length + lcs) & 0xff) !== 0) {
+      continue;
+    }
+    if (length === 0 && lcs === 0xff) {
+      continue;
+    }
+    const total = 5 + length + 2;
+    if (raw.length < offset + total) {
+      continue;
+    }
+    const packet = raw.slice(offset, offset + total);
+    const direction = packet[5];
+    const responseCommand = ((packet[6] ?? 0) - 1) & 0xff;
+    if (direction !== PN532_DEVICE_TO_HOST || responseCommand !== expectedCommand) {
+      continue;
+    }
+    const checksum = packet.slice(5, 5 + length).reduce((sum, value) => (sum + value) & 0xff, 0);
+    const dcs = packet[5 + length];
+    if (((checksum + dcs) & 0xff) !== 0) {
+      continue;
+    }
+    return packet.slice(7, 5 + length);
+  }
+  throw new Error("PN532 response not found");
+}
+
 function sgCommandName(cmd) {
   switch (cmd) {
     case SG_CMD_GET_FW_VERSION:
@@ -3200,6 +3612,21 @@ async function connectHinataReader() {
   }
 }
 
+async function connectHinataUsbReader() {
+  try {
+    if (aimeReaderAdapter?.connected) {
+      await aimeReaderAdapter.disconnect();
+    }
+    clearAimeCardDisplay();
+    aimeReaderAdapter = new HinataUsbReaderAdapter();
+    setAimeReaderStatusKey("aime.status.requesting");
+    await aimeReaderAdapter.connect();
+  } catch (error) {
+    setAimeReaderStatus(`Hinata WebUSB: ${error.message || String(error)}`, true);
+    appendAimeReaderLog(t("aime.log.error", { message: error.message || String(error) }));
+  }
+}
+
 async function disconnectAimeReader() {
   if (aimeReaderAdapter) {
     await aimeReaderAdapter.disconnect();
@@ -3422,6 +3849,10 @@ function bindActions() {
 
   document.querySelector("#connect-hinata-reader").addEventListener("click", () => {
     connectHinataReader();
+  });
+
+  document.querySelector("#connect-hinata-usb-reader").addEventListener("click", () => {
+    connectHinataUsbReader();
   });
 
   document.querySelector("#probe-aime-reader").addEventListener("click", () => {
