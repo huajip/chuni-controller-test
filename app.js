@@ -178,6 +178,8 @@ const ui = {
   aimeReaderMode: document.querySelector("#aime-reader-mode"),
   aimeReaderBaud: document.querySelector("#aime-reader-baud"),
   aimeReaderLedColor: document.querySelector("#aime-reader-led-color"),
+  aimeReaderLedBrightness: document.querySelector("#aime-reader-led-brightness"),
+  aimeReaderLedBrightnessValue: document.querySelector("#aime-reader-led-brightness-value"),
   aimeReaderFw: document.querySelector("#aime-reader-fw"),
   aimeReaderHw: document.querySelector("#aime-reader-hw"),
   aimeCardType: document.querySelector("#aime-card-type"),
@@ -1667,7 +1669,7 @@ class AimeReaderSerialAdapter {
     clearAimeCardDisplay();
     appendAimeReaderLog(t("aime.log.scanStarted", { seconds: AIME_READER_SCAN_DURATION_MS / 1000 }));
 
-    const scanRgb = hexToReaderRgb(ui.aimeReaderLedColor?.value || "#ffffff");
+    const scanRgb = selectedReaderLedRgb();
     const deadline = Date.now() + AIME_READER_SCAN_DURATION_MS;
     let nextBlinkAt = 0;
     let blinkOn = false;
@@ -3234,24 +3236,57 @@ function deriveZhouAccessCode(idm) {
 
 function buildFelicaCardNumbers(idm, accessCode = "") {
   const rawIdm = normalizeCardHex(idm);
-  const entries = [
+  return [
     [t("aime.cardNumber.accessCode"), accessCode],
     [t("aime.cardNumber.minime"), deriveMinimeAccessCode(idm)],
     [t("aime.cardNumber.zhou"), deriveZhouAccessCode(idm)],
     [t("aime.cardNumber.konami"), encodeEpassCardId(rawIdm)],
     [t("aime.cardNumber.idm"), rawIdm],
-  ];
-  return entries
+  ]
     .filter(([, value]) => value)
-    .map(([label, value]) => `${label}: ${value}`)
-    .join("\n");
+    .map(([label, value]) => ({ label, value }));
+}
+
+function renderAimeCardNumbers(entries) {
+  ui.aimeCardValue.replaceChildren();
+  if (!entries.length) {
+    ui.aimeCardValue.textContent = "-";
+    return;
+  }
+
+  for (const entry of entries) {
+    const row = document.createElement("div");
+    row.className = "card-number-row";
+
+    const text = document.createElement("div");
+    text.className = "card-number-text";
+
+    const label = document.createElement("span");
+    label.className = "card-number-label";
+    label.textContent = entry.label;
+
+    const value = document.createElement("strong");
+    value.className = "card-number-value";
+    value.textContent = entry.value;
+
+    const copy = document.createElement("button");
+    copy.type = "button";
+    copy.className = "copy-card-number";
+    copy.dataset.copyValue = entry.value;
+    copy.textContent = t("action.copy");
+    copy.setAttribute("aria-label", t("aime.copyCardNumber", { label: entry.label }));
+
+    text.append(label, value);
+    row.append(text, copy);
+    ui.aimeCardValue.append(row);
+  }
 }
 
 function showFelicaCardNumbers(idm, cardInfo, accessCode = "") {
   ui.aimeCardType.textContent = accessCode
     ? t("aime.card.felicaAccessCode", { model: cardInfo.label })
     : t("aime.card.felicaModel", { model: cardInfo.label });
-  ui.aimeCardValue.textContent = buildFelicaCardNumbers(idm, accessCode);
+  renderAimeCardNumbers(buildFelicaCardNumbers(idm, accessCode));
 }
 
 function parsePn532FelicaTarget(payload) {
@@ -3464,6 +3499,41 @@ function clearAimeReaderLog() {
 function clearAimeCardDisplay() {
   ui.aimeCardType.textContent = "-";
   ui.aimeCardValue.textContent = "-";
+}
+
+async function copyTextToClipboard(text) {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.setAttribute("readonly", "");
+  textarea.style.position = "fixed";
+  textarea.style.opacity = "0";
+  document.body.append(textarea);
+  textarea.select();
+  document.execCommand("copy");
+  textarea.remove();
+}
+
+async function copyAimeCardNumber(button) {
+  const value = button.dataset.copyValue || "";
+  if (!value) {
+    return;
+  }
+
+  const original = button.textContent;
+  try {
+    await copyTextToClipboard(value);
+    button.textContent = t("action.copied");
+    setTimeout(() => {
+      button.textContent = original || t("action.copy");
+    }, 900);
+  } catch (error) {
+    appendAimeReaderLog(t("aime.log.copyFailed", { message: error.message || String(error) }));
+  }
 }
 
 function setAimeReaderStatusKey(key, isError = false) {
@@ -3879,6 +3949,26 @@ function hexToReaderRgb(hex) {
   );
 }
 
+function readerLedBrightness() {
+  const value = Number(ui.aimeReaderLedBrightness?.value || 100);
+  return Number.isFinite(value) ? Math.max(0, Math.min(100, value)) : 100;
+}
+
+function scaleReaderLedRgb(rgb) {
+  const scale = readerLedBrightness() / 100;
+  return rgb.map((value) => Math.max(0, Math.min(255, Math.round(value * scale))));
+}
+
+function selectedReaderLedRgb() {
+  return scaleReaderLedRgb(hexToReaderRgb(ui.aimeReaderLedColor?.value || "#ffffff"));
+}
+
+function updateReaderLedBrightnessLabel() {
+  if (ui.aimeReaderLedBrightnessValue) {
+    ui.aimeReaderLedBrightnessValue.textContent = `${readerLedBrightness()}%`;
+  }
+}
+
 function cloneColor(color) {
   return { r: color.r, g: color.g, b: color.b };
 }
@@ -4183,7 +4273,7 @@ async function scanAimeReaderTimed() {
 async function sendAimeReaderLedColor() {
   try {
     const adapter = await ensureAimeReaderConnected();
-    const rgb = hexToReaderRgb(ui.aimeReaderLedColor?.value || "#ffffff");
+    const rgb = selectedReaderLedRgb();
     await adapter.setReaderLed(rgb, "manual");
   } catch (error) {
     setAimeReaderStatus(`Reader COM: ${error.message || String(error)}`, true);
@@ -4384,6 +4474,17 @@ function bindActions() {
 
   document.querySelector("#scan-aime-reader").addEventListener("click", () => {
     scanAimeReaderTimed();
+  });
+
+  ui.aimeReaderLedBrightness?.addEventListener("input", () => {
+    updateReaderLedBrightnessLabel();
+  });
+
+  ui.aimeCardValue.addEventListener("click", (event) => {
+    const copyButton = event.target.closest(".copy-card-number");
+    if (copyButton) {
+      copyAimeCardNumber(copyButton);
+    }
   });
 
   document.querySelector("#send-aime-reader-led").addEventListener("click", () => {

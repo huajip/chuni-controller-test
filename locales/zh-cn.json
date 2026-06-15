@@ -229,5 +229,10 @@
   "aime.log.felicaAccessCodeRead": "已解出 Aime access code",
   "action.connectReader": "连接读卡器",
   "action.testAimeReader": "测试读卡器",
-  "action.clearAimeReaderLed": "关闭读卡器灯光"
+  "action.clearAimeReaderLed": "关闭读卡器灯光",
+  "action.copy": "复制",
+  "action.copied": "已复制",
+  "aime.copyCardNumber": "复制 {label}",
+  "aime.log.copyFailed": "复制失败：{message}",
+  "aime.readerLedBrightness": "读卡器灯光亮度"
 }

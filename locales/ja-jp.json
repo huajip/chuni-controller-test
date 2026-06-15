@@ -229,5 +229,10 @@
   "aime.error.felicaAccessCodeInvalid": "Could not decode Aime access code from SPAD0",
   "action.connectReader": "Connect Reader",
   "action.testAimeReader": "Test Reader",
-  "action.clearAimeReaderLed": "Reader LED Off"
+  "action.clearAimeReaderLed": "Reader LED Off",
+  "action.copy": "Copy",
+  "action.copied": "Copied",
+  "aime.copyCardNumber": "Copy {label}",
+  "aime.log.copyFailed": "Copy failed: {message}",
+  "aime.readerLedBrightness": "Reader LED Brightness"
 }

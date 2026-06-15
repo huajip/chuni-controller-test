@@ -130,9 +130,9 @@
           <span class="card-test-label" data-i18n="aime.cardType">Card Type</span>
           <strong id="aime-card-type">-</strong>
         </div>
-        <div class="card-test-item">
+        <div class="card-test-item card-number-item">
           <span class="card-test-label" data-i18n="aime.cardValue">Card Value</span>
-          <strong id="aime-card-value">-</strong>
+          <div id="aime-card-value" class="card-number-list">-</div>
         </div>
       </div>
       <div class="control-group reader-actions">
@@ -144,6 +144,11 @@
         <label class="light-control">
           <span data-i18n="aime.readerLedColor">Reader LED Color</span>
           <input id="aime-reader-led-color" type="color" value="#ffffff">
+        </label>
+        <label class="light-control reader-brightness-control">
+          <span data-i18n="aime.readerLedBrightness">Reader LED Brightness</span>
+          <input id="aime-reader-led-brightness" type="range" min="1" max="100" value="100">
+          <strong id="aime-reader-led-brightness-value">100%</strong>
         </label>
         <button id="send-aime-reader-led" class="action" data-i18n="action.sendAimeReaderLed">Send Reader LED</button>
         <button id="clear-aime-reader-led" class="action ghost" data-i18n="action.clearAimeReaderLed">Reader LED Off</button>
@@ -257,6 +262,6 @@
     </div>
   </template>
 
-  <script type="module" src="./app.js?v=20260616-reader-led"></script>
+  <script type="module" src="./app.js?v=20260616-card-copy-led-brightness"></script>
 </body>
 </html>

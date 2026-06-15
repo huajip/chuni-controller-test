@@ -453,6 +453,25 @@ h2 {
   min-width: 180px;
 }
 
+.reader-brightness-control {
+  display: grid;
+  grid-template-columns: minmax(140px, 1fr) auto;
+  column-gap: 10px;
+}
+
+.reader-brightness-control span {
+  grid-column: 1 / -1;
+}
+
+.reader-brightness-control input[type="range"] {
+  width: 100%;
+}
+
+.reader-brightness-control strong {
+  min-width: 44px;
+  text-align: right;
+}
+
 .card-test-item {
   border: 1px solid var(--line);
   border-radius: 14px;
@@ -474,9 +493,65 @@ h2 {
   word-break: break-word;
 }
 
+.card-number-item {
+  grid-column: span 3;
+}
+
 #aime-card-value {
   font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
   line-height: 1.55;
+}
+
+.card-number-list {
+  display: grid;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.card-number-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  padding: 8px 0;
+  border-top: 1px solid rgba(144, 164, 185, 0.16);
+}
+
+.card-number-row:first-child {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.card-number-label {
+  display: block;
+  color: var(--muted);
+  font-family: inherit;
+  font-size: 12px;
+}
+
+.card-number-value {
+  display: block;
+  margin-top: 2px;
+  overflow-wrap: anywhere;
+  font-size: 18px;
+}
+
+.copy-card-number {
+  min-width: 72px;
+  height: 34px;
+  border: 1px solid rgba(125, 160, 202, 0.45);
+  border-radius: 8px;
+  background: rgba(12, 24, 38, 0.96);
+  color: var(--text);
+  cursor: pointer;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.copy-card-number:hover {
+  border-color: var(--accent);
+  background: rgba(24, 47, 72, 0.98);
 }
 
 .card-light-item input[type="color"] {
@@ -541,6 +616,10 @@ h2 {
 
   .reader-settings {
     grid-template-columns: 1fr;
+  }
+
+  .card-number-item {
+    grid-column: auto;
   }
 
   .control-group {
