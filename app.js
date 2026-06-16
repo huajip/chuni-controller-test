@@ -4361,6 +4361,20 @@ async function ensureAimeReaderConnected() {
   return aimeReaderAdapter;
 }
 
+async function ensurePn532SerialConnected() {
+  if (aimeReaderAdapter?.connected) {
+    return aimeReaderAdapter;
+  }
+  if (aimeReaderAdapter) {
+    await aimeReaderAdapter.disconnect().catch(() => {});
+  }
+  clearAimeCardDisplay();
+  aimeReaderAdapter = new AimeReaderSerialAdapter();
+  setAimeReaderStatusKey("aime.status.requesting");
+  await aimeReaderAdapter.connect(Number(ui.aimeReaderBaud.value) || AIME_READER_DEFAULT_BAUD);
+  return aimeReaderAdapter;
+}
+
 async function runAimeReaderProbe() {
   try {
     const adapter = await ensureAimeReaderConnected();
@@ -4411,7 +4425,7 @@ async function scanAimeReaderTimed() {
 
 async function testPn532ReaderOnce() {
   try {
-    const adapter = await ensureAimeReaderConnected();
+    const adapter = await ensurePn532SerialConnected();
     await adapter.runDirectPn532Probe();
     await adapter.pollDirectPn532CardOnce();
   } catch (error) {
