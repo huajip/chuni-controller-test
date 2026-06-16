@@ -1933,6 +1933,14 @@ class HinataHidReaderAdapter extends AimeReaderSerialAdapter {
         return;
       }
 
+      if (bytes[0] === HINATA_CMD_PN532) {
+        if (AIME_READER_DEBUG_LOG) {
+          appendAimeReaderLog(`RX HID Hinata PN532 data=${formatHex(bytes)}`);
+        }
+        bytes.slice(1).forEach((byte) => this.consumeRawByte(byte));
+        return;
+      }
+
       if (AIME_READER_DEBUG_LOG) {
         appendAimeReaderLog(`RX HID report=${hexByte(event.reportId)} data=${formatHex(bytes) || "-"}`);
       }
@@ -2009,6 +2017,34 @@ class HinataHidReaderAdapter extends AimeReaderSerialAdapter {
     const firmware = await firmwarePromise;
     ui.aimeReaderFw.textContent = `Hinata ${firmware}`;
     return firmware;
+  }
+
+  async sendPn532Command(command, payload = [], timeoutMs = 1200) {
+    if (!this.connected || !this.device?.opened) {
+      throw new Error(t("aime.error.notConnected"));
+    }
+
+    const responsePromise = new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        const index = this.pn532Waiters.findIndex((waiter) => waiter.command === command);
+        if (index >= 0) {
+          this.pn532Waiters.splice(index, 1);
+        }
+        reject(new Error(t("aime.error.timeout", { cmd: `Hinata PN532 ${hexByte(command)}` })));
+      }, timeoutMs);
+      this.pn532Waiters.push({ command, resolve, reject, timer });
+    });
+
+    const packet = buildPn532Packet(command, payload);
+    const report = Uint8Array.from([HINATA_CMD_PN532, ...packet]);
+    try {
+      await this.device.sendReport(HINATA_REPORT_ID, report);
+    } catch (error) {
+      const padded = new Uint8Array(Math.max(64, report.length));
+      padded.set(report);
+      await this.device.sendReport(HINATA_REPORT_ID, padded);
+    }
+    return responsePromise;
   }
 
   async writeBytes(bytes) {
@@ -4382,7 +4418,10 @@ async function ensureAimeReaderConnected() {
 }
 
 async function ensurePn532SerialConnected() {
-  if (aimeReaderAdapter?.connected && aimeReaderAdapter.constructor === AimeReaderSerialAdapter) {
+  if (
+    aimeReaderAdapter?.connected &&
+    (aimeReaderAdapter.constructor === AimeReaderSerialAdapter || aimeReaderAdapter.constructor === HinataHidReaderAdapter)
+  ) {
     return aimeReaderAdapter;
   }
   if (aimeReaderAdapter) {
