@@ -1739,6 +1739,7 @@ class AimeReaderSerialAdapter {
       const accessCode = decodeSpad0AccessCode(spad0);
       if (accessCode) {
         showFelicaCardNumbers(idm, cardInfo, accessCode);
+        lookupFelicaAccessCode(idm, pmm, spad0, cardInfo, accessCode);
         appendAimeReaderLog(t("aime.log.felicaAccessCodeRead"));
       } else {
         showFelicaCardNumbers(idm, cardInfo);
@@ -1797,6 +1798,7 @@ class AimeReaderSerialAdapter {
     const accessCode = decodeSpad0AccessCode(spad0);
     if (accessCode) {
       showFelicaCardNumbers(parsed.idm, cardInfo, accessCode);
+      lookupFelicaAccessCode(parsed.idm, parsed.pmm, spad0, cardInfo, accessCode);
       appendAimeReaderLog(t("aime.log.felicaAccessCodeRead"));
     } else {
       showFelicaCardNumbers(parsed.idm, cardInfo);
@@ -3299,7 +3301,7 @@ async function lookupFelicaAccessCode(idm, pmm, spad0, cardInfo, accessCode = ""
     }
     const json = await response.json();
     const lookupCode = Number(json?.code || 0) > 0 ? String(json?.data || "") : "";
-    if (lookupSeq === state.aimeLookupSeq && lookupCode) {
+    if (lookupSeq === state.aimeLookupSeq && lookupCode && !accessCode) {
       showFelicaCardNumbers(idm, cardInfo, lookupCode);
     }
     return lookupCode;
