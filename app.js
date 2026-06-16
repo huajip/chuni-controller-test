@@ -2074,15 +2074,6 @@ class HinataUsbReaderAdapter extends AimeReaderSerialAdapter {
 
     for (const usbInterface of interfaces) {
       for (const alternate of usbInterface.alternates ?? []) {
-        const ifaceClass = alternate.interfaceClass;
-        const preferred = ifaceClass === 0x03 ||
-          ifaceClass === 0xff ||
-          ifaceClass === 0x02 ||
-          ifaceClass === 0x0a;
-        if (!preferred) {
-          continue;
-        }
-
         if (!claimed.has(usbInterface.interfaceNumber)) {
           try {
             await this.device.claimInterface(usbInterface.interfaceNumber);
@@ -2103,10 +2094,14 @@ class HinataUsbReaderAdapter extends AimeReaderSerialAdapter {
           }
           const candidate = {
             interfaceNumber: usbInterface.interfaceNumber,
+            alternateSetting: alternate.alternateSetting ?? 0,
             endpointNumber: endpoint.endpointNumber,
             direction: endpoint.direction,
             type: endpoint.type,
             packetSize: endpoint.packetSize || 64,
+            interfaceClass: alternate.interfaceClass ?? null,
+            interfaceSubclass: alternate.interfaceSubclass ?? null,
+            interfaceProtocol: alternate.interfaceProtocol ?? null,
           };
           if (endpoint.direction === "in") {
             read.push(candidate);
@@ -2123,6 +2118,12 @@ class HinataUsbReaderAdapter extends AimeReaderSerialAdapter {
   async probeEndpointPairs(candidates) {
     for (const outEndpoint of candidates.write) {
       for (const inEndpoint of candidates.read) {
+        if (
+          outEndpoint.interfaceNumber === inEndpoint.interfaceNumber &&
+          outEndpoint.alternateSetting !== inEndpoint.alternateSetting
+        ) {
+          continue;
+        }
         if (AIME_READER_DEBUG_LOG) {
           appendAimeReaderLog(t("aime.log.usbProbePair", {
             out: outEndpoint.endpointNumber,
@@ -2130,6 +2131,15 @@ class HinataUsbReaderAdapter extends AimeReaderSerialAdapter {
           }));
         }
 
+        try {
+          await this.prepareEndpointPair(outEndpoint, inEndpoint);
+        } catch (error) {
+          appendAimeReaderLog(t("aime.log.usbProbeFailed", {
+            mode: "USB alternate",
+            message: error.message || String(error),
+          }));
+          continue;
+        }
         const sega = await this.trySegaEndpoint(outEndpoint, inEndpoint);
         if (sega) {
           this.selectEndpoints(outEndpoint, inEndpoint, "sega-reader");
@@ -2156,6 +2166,15 @@ class HinataUsbReaderAdapter extends AimeReaderSerialAdapter {
     }
 
     throw new Error(t("aime.error.noHinataEndpoints"));
+  }
+
+  async prepareEndpointPair(outEndpoint, inEndpoint) {
+    const selections = new Map();
+    selections.set(outEndpoint.interfaceNumber, outEndpoint.alternateSetting);
+    selections.set(inEndpoint.interfaceNumber, inEndpoint.alternateSetting);
+    for (const [interfaceNumber, alternateSetting] of selections) {
+      await this.device.selectAlternateInterface(interfaceNumber, alternateSetting);
+    }
   }
 
   selectEndpoints(outEndpoint, inEndpoint, protocol) {
