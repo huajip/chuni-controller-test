@@ -178,6 +178,7 @@ const ui = {
   aimeReaderStatus: document.querySelector("#aime-reader-status"),
   aimeReaderMode: document.querySelector("#aime-reader-mode"),
   aimeReaderBaud: document.querySelector("#aime-reader-baud"),
+  aimeReaderScanButton: document.querySelector("#scan-aime-reader"),
   aimeReaderLedColor: document.querySelector("#aime-reader-led-color"),
   aimeReaderLedHex: document.querySelector("#aime-reader-led-hex"),
   aimeReaderLedOrder: document.querySelector("#aime-reader-led-order"),
@@ -1670,10 +1671,11 @@ class AimeReaderSerialAdapter {
     return true;
   }
 
-  async runTimedReaderScan() {
+  async runTimedReaderScan(options = {}) {
     if (this.protocol !== "sega") {
       throw new Error(t("aime.error.readerLedRequiresSega"));
     }
+    const isCancelled = options.isCancelled || (() => false);
 
     setAimeReaderStatusKey("aime.status.scanning");
     clearAimeCardDisplay();
@@ -1684,6 +1686,12 @@ class AimeReaderSerialAdapter {
     let nextBlinkAt = 0;
     let blinkOn = false;
     while (Date.now() < deadline) {
+      if (isCancelled()) {
+        await this.setReaderLed([0x00, 0x00, 0x00], "off", { silent: true });
+        setAimeReaderStatusKey("aime.status.connected");
+        appendAimeReaderLog(t("aime.log.scanCanceled"));
+        return null;
+      }
       try {
         const now = Date.now();
         if (now >= nextBlinkAt) {
@@ -1691,13 +1699,26 @@ class AimeReaderSerialAdapter {
           nextBlinkAt = now + AIME_READER_LED_BLINK_MS;
           await this.setReaderLed(blinkOn ? scanRgb : [0x00, 0x00, 0x00], "scan", { silent: true });
         }
-        if (await this.pollCardOnce({ manageLed: false, throwOnReadError: true })) {
+        const hasCard = await this.pollCardOnce({ manageLed: false, throwOnReadError: true });
+        if (isCancelled()) {
+          await this.setReaderLed([0x00, 0x00, 0x00], "off", { silent: true });
+          setAimeReaderStatusKey("aime.status.connected");
+          appendAimeReaderLog(t("aime.log.scanCanceled"));
+          return null;
+        }
+        if (hasCard) {
           await this.setReaderLed([0x00, 0x00, 0xff], "scan-ok", { silent: true });
           appendAimeReaderLog(t("aime.log.scanCardFound"));
           setAimeReaderStatusKey("aime.status.cardFound");
           return true;
         }
       } catch (error) {
+        if (isCancelled()) {
+          await this.setReaderLed([0x00, 0x00, 0x00], "off", { silent: true });
+          setAimeReaderStatusKey("aime.status.connected");
+          appendAimeReaderLog(t("aime.log.scanCanceled"));
+          return null;
+        }
         await this.setReaderLed([0xff, 0x00, 0x00], "scan-error", { silent: true });
         throw error;
       }
@@ -3995,6 +4016,7 @@ function render() {
 let currentAdapter = null;
 let touchSerialAdapter = null;
 let aimeReaderAdapter = null;
+let aimeReaderScanToken = null;
 let lightLoopTimer = null;
 let lightLoopBusy = false;
 let lastLightPayloadKey = "";
@@ -4362,14 +4384,39 @@ async function pollAimeReaderOnce() {
 }
 
 async function scanAimeReaderTimed() {
+  if (aimeReaderScanToken) {
+    aimeReaderScanToken.cancelled = true;
+    await aimeReaderAdapter?.setReaderLed?.([0x00, 0x00, 0x00], "off", { silent: true }).catch(() => {});
+    appendAimeReaderLog(t("aime.log.scanCanceled"));
+    return;
+  }
+
+  const scanToken = { cancelled: false };
+  aimeReaderScanToken = scanToken;
+  setAimeReaderScanActive(true);
   try {
     const adapter = await ensureAimeReaderConnected();
-    await adapter.runTimedReaderScan();
+    await adapter.runTimedReaderScan({ isCancelled: () => scanToken.cancelled });
   } catch (error) {
-    await aimeReaderAdapter?.setReaderLed?.([0xff, 0x00, 0x00], "scan-error", { silent: true }).catch(() => {});
+    if (!scanToken.cancelled) {
+      await aimeReaderAdapter?.setReaderLed?.([0xff, 0x00, 0x00], "scan-error", { silent: true }).catch(() => {});
+    }
     setAimeReaderStatus(`Reader COM: ${error.message || String(error)}`, true);
     appendAimeReaderLog(t("aime.log.error", { message: error.message || String(error) }));
+  } finally {
+    if (aimeReaderScanToken === scanToken) {
+      aimeReaderScanToken = null;
+      setAimeReaderScanActive(false);
+    }
   }
+}
+
+function setAimeReaderScanActive(active) {
+  if (!ui.aimeReaderScanButton) {
+    return;
+  }
+  ui.aimeReaderScanButton.textContent = active ? t("action.cancelAimeReaderTest") : t("action.testAimeReader");
+  ui.aimeReaderScanButton.classList.toggle("ghost", active);
 }
 
 async function sendAimeReaderLedColor() {
@@ -4591,7 +4638,7 @@ function bindActions() {
     connectSelectedAimeReader();
   });
 
-  document.querySelector("#scan-aime-reader").addEventListener("click", () => {
+  ui.aimeReaderScanButton.addEventListener("click", () => {
     scanAimeReaderTimed();
   });
 
