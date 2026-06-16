@@ -1522,8 +1522,10 @@ class AimeReaderSerialAdapter {
 
   async sendCommandNoResponseNow(addr, cmd, payload = [], options = {}) {
     const data = Array.from(payload);
-    const seq = this.seq;
-    this.seq = (this.seq + 1) & 0xff;
+    const seq = Number.isInteger(options.seqOverride) ? options.seqOverride & 0xff : this.seq;
+    if (!Number.isInteger(options.seqOverride)) {
+      this.seq = (this.seq + 1) & 0xff;
+    }
     const frame = [5 + data.length, addr, seq, cmd, data.length, ...data];
     const encoded = encodeSgFrame(frame);
     if (!options.silent && AIME_READER_DEBUG_LOG) {
@@ -1731,7 +1733,10 @@ class AimeReaderSerialAdapter {
 
     const payload = mapReaderLedOrder(rgb);
     try {
-      await this.sendCommandNoResponse(SG_LED_ADDR, SG_LED_CMD_SET_COLOR, payload, { silent: options.silent });
+      await this.sendCommandNoResponse(SG_LED_ADDR, SG_LED_CMD_SET_COLOR, payload, {
+        silent: options.silent,
+        seqOverride: 0x00,
+      });
       if (!options.silent) {
         appendAimeReaderLog(t("aime.log.readerLed", { reason: t(`aime.readerLed.${reason}`), rgb: formatHex(payload) }));
       }
