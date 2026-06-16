@@ -179,6 +179,7 @@ const ui = {
   aimeReaderMode: document.querySelector("#aime-reader-mode"),
   aimeReaderBaud: document.querySelector("#aime-reader-baud"),
   aimeReaderScanButton: document.querySelector("#scan-aime-reader"),
+  aimeReaderPn532Button: document.querySelector("#test-pn532-reader"),
   aimeReaderLedColor: document.querySelector("#aime-reader-led-color"),
   aimeReaderLedHex: document.querySelector("#aime-reader-led-hex"),
   aimeReaderLedBrightness: document.querySelector("#aime-reader-led-brightness"),
@@ -4408,6 +4409,17 @@ async function scanAimeReaderTimed() {
   }
 }
 
+async function testPn532ReaderOnce() {
+  try {
+    const adapter = await ensureAimeReaderConnected();
+    await adapter.runDirectPn532Probe();
+    await adapter.pollDirectPn532CardOnce();
+  } catch (error) {
+    setAimeReaderStatus(`PN532: ${error.message || String(error)}`, true);
+    appendAimeReaderLog(t("aime.log.error", { message: error.message || String(error) }));
+  }
+}
+
 function setAimeReaderScanActive(active) {
   if (!ui.aimeReaderScanButton) {
     return;
@@ -4620,6 +4632,10 @@ function bindActions() {
 
   ui.aimeReaderScanButton.addEventListener("click", () => {
     scanAimeReaderTimed();
+  });
+
+  ui.aimeReaderPn532Button.addEventListener("click", () => {
+    testPn532ReaderOnce();
   });
 
   ui.aimeReaderLedBrightness?.addEventListener("input", () => {

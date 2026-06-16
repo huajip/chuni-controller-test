@@ -230,6 +230,7 @@
   "aime.error.felicaAccessCodeInvalid": "無法從 SPAD0 解出 Aime access code",
   "action.connectReader": "連接讀卡器",
   "action.testAimeReader": "測試讀卡器",
+  "action.testPn532Reader": "測試 PN532",
   "action.cancelAimeReaderTest": "取消測試",
   "action.clearAimeReaderLed": "關閉讀卡器燈光",
   "action.copy": "複製",

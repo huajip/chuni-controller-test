@@ -230,6 +230,7 @@
   "aime.log.felicaAccessCodeRead": "已解出 Aime access code",
   "action.connectReader": "连接读卡器",
   "action.testAimeReader": "测试读卡器",
+  "action.testPn532Reader": "测试 PN532",
   "action.cancelAimeReaderTest": "取消测试",
   "action.clearAimeReaderLed": "关闭读卡器灯光",
   "action.copy": "复制",
