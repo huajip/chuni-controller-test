@@ -1820,6 +1820,12 @@ class AimeReaderSerialAdapter {
     await this.ensurePn532Initialized();
     const parsed = await this.pollPn532FelicaTarget();
     if (!parsed) {
+      const mifare = await this.pollPn532MifareTarget();
+      if (mifare) {
+        showMifareCardNumbers(mifare.uid);
+        setAimeReaderStatusKey("aime.status.cardFound");
+        return true;
+      }
       throw new Error(t("aime.error.pn532FelicaTargetNotFound", { hex: "-" }));
     }
 
@@ -1882,6 +1888,15 @@ class AimeReaderSerialAdapter {
       }
     }
     return null;
+  }
+
+  async pollPn532MifareTarget() {
+    try {
+      const poll = await this.sendPn532Command(PN532_CMD_IN_LIST_PASSIVE_TARGET, [0x01, 0x00], 2200);
+      return parsePn532MifareTarget(poll);
+    } catch (_error) {
+      return null;
+    }
   }
 
   async runTimedPn532Scan(options = {}) {
@@ -3499,16 +3514,25 @@ async function lookupFelicaAccessCode(idm, pmm, spad0, cardInfo, accessCode = ""
 }
 
 function parsePn532FelicaTarget(payload) {
-  if (!payload?.length || payload[0] < 1) {
+  if (!payload?.length) {
     return null;
   }
 
-  const target = payload[1] || 1;
-  for (let offset = 2; offset <= payload.length - 18; offset++) {
-    const commandOffset = payload[offset] === 0x01 ? offset : payload[offset + 1] === 0x01 ? offset + 1 : -1;
-    if (commandOffset < 0 || commandOffset + 17 >= payload.length) {
+  for (let offset = 0; offset <= payload.length - 3; offset++) {
+    const tagCount = payload[offset];
+    if (!tagCount) {
       continue;
     }
+    const target = payload[offset + 1];
+    const targetDataLength = payload[offset + 2];
+    if (targetDataLength < 18 || payload.length - offset - 3 < targetDataLength - 1) {
+      continue;
+    }
+    const commandOffset = offset + 3;
+    if (payload[commandOffset] !== 0x01 || commandOffset + 17 > payload.length) {
+      continue;
+    }
+
     return {
       target,
       idm: payload.slice(commandOffset + 1, commandOffset + 9),
@@ -3517,6 +3541,29 @@ function parsePn532FelicaTarget(payload) {
   }
 
   return null;
+}
+
+function parsePn532MifareTarget(payload) {
+  if (!payload?.length || payload.length < 7 || payload[0] < 1) {
+    return null;
+  }
+  const target = payload[1] || 1;
+  const sakIndex = 4;
+  const uidLengthIndex = 5;
+  const uidLength = payload[uidLengthIndex] || 0;
+  const uidStart = uidLengthIndex + 1;
+  if (uidLength <= 0 || uidStart + uidLength > payload.length) {
+    return null;
+  }
+  const sak = payload[sakIndex] || 0;
+  if ((sak & 0x08) === 0) {
+    return null;
+  }
+  return {
+    target,
+    sak,
+    uid: payload.slice(uidStart, uidStart + uidLength),
+  };
 }
 
 function decodeSgResponseBytes(rawBytes) {
@@ -4444,7 +4491,7 @@ async function connectSelectedAimeReader() {
     await connectHinataReader();
     return;
   }
-  if (mode === "hinata-webusb" || mode === "hinata-sega") {
+  if (mode === "hinata-sega") {
     await connectHinataUsbReader();
   } else if (mode === "pn532-com") {
     await connectAimeReader();

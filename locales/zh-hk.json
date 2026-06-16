@@ -222,7 +222,6 @@
   "aime.readerMode.aimeCom": "Aime COM / 原裝 SEGA 讀卡器",
   "aime.readerMode.hinataSega": "Hinata SEGA 協議",
   "aime.readerMode.hinataHid": "Hinata HID",
-  "aime.readerMode.hinataWebUsb": "Hinata WebUSB",
   "aime.readerMode.pn532Com": "PN532 COM",
   "aime.cardNumber.accessCode": "Aime Access Code",
   "aime.cardNumber.minime": "Minime",
