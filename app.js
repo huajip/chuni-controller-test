@@ -1388,6 +1388,16 @@ class AimeReaderSerialAdapter {
         this.rawBytes.splice(0, 6);
         continue;
       }
+      if (length === 1 && this.rawBytes.length >= 8 && this.rawBytes[5] === 0x7f) {
+        const packet = this.rawBytes.slice(0, 8);
+        this.rawBytes.splice(0, 8);
+        const [waiter] = this.pn532Waiters.splice(0, 1);
+        if (waiter) {
+          clearTimeout(waiter.timer);
+          waiter.reject(new Error(`PN532 error frame: ${formatHex(packet)}`));
+        }
+        continue;
+      }
       const total = 5 + length + 2;
       if (this.rawBytes.length < total) {
         return;
@@ -4331,8 +4341,18 @@ async function connectHinataUsbReader() {
 
 async function connectSelectedAimeReader() {
   const mode = ui.aimeReaderMode?.value || "aime-com";
-  if (mode === "hinata-sega") {
+  if (mode === "hinata-hid") {
+    await connectHinataReader();
+    return;
+  }
+  if (mode === "hinata-webusb" || mode === "hinata-sega") {
     await connectHinataUsbReader();
+  } else if (mode === "pn532-com") {
+    await connectAimeReader();
+    if (aimeReaderAdapter?.connected) {
+      await aimeReaderAdapter.runDirectPn532Probe();
+    }
+    return;
   } else {
     await connectAimeReader();
   }
@@ -4362,7 +4382,7 @@ async function ensureAimeReaderConnected() {
 }
 
 async function ensurePn532SerialConnected() {
-  if (aimeReaderAdapter?.connected) {
+  if (aimeReaderAdapter?.connected && aimeReaderAdapter.constructor === AimeReaderSerialAdapter) {
     return aimeReaderAdapter;
   }
   if (aimeReaderAdapter) {

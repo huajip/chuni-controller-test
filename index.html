@@ -108,7 +108,9 @@
           <span data-i18n="aime.readerMode">Reader Mode</span>
           <select id="aime-reader-mode">
             <option value="aime-com" data-i18n="aime.readerMode.aimeCom">Aime COM</option>
-            <option value="hinata-sega" data-i18n="aime.readerMode.hinataSega">Hinata SEGA</option>
+            <option value="hinata-hid" data-i18n="aime.readerMode.hinataHid">Hinata HID</option>
+            <option value="hinata-webusb" data-i18n="aime.readerMode.hinataWebUsb">Hinata WebUSB</option>
+            <option value="pn532-com" data-i18n="aime.readerMode.pn532Com">PN532 COM</option>
           </select>
         </label>
         <label class="light-control">
@@ -267,6 +269,6 @@
     </div>
   </template>
 
-  <script type="module" src="./app.js?v=20260617-pn532-serial"></script>
+  <script type="module" src="./app.js?v=20260617-reader-modes"></script>
 </body>
 </html>
