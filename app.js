@@ -4383,6 +4383,23 @@ async function sendAimeReaderLedColor() {
   }
 }
 
+async function sendAimeReaderLedRawColor() {
+  try {
+    const adapter = await ensureAimeReaderConnected();
+    if (adapter.protocol !== "sega") {
+      throw new Error(t("aime.error.readerLedRequiresSega"));
+    }
+    const hex = parseColorHex(ui.aimeReaderLedHex?.value) || parseColorHex(ui.aimeReaderLedColor?.value) || "ffffff";
+    const rgb = hexToReaderRgb(hex);
+    const frame = encodeSgFrame([0x08, SG_LED_ADDR, 0x00, SG_LED_CMD_SET_COLOR, 0x03, ...rgb]);
+    await adapter.writeBytes(frame);
+    appendAimeReaderLog(t("aime.log.readerLed", { reason: t("aime.readerLed.raw"), rgb: formatHex(rgb) }));
+  } catch (error) {
+    setAimeReaderStatus(`Reader COM: ${error.message || String(error)}`, true);
+    appendAimeReaderLog(t("aime.log.error", { message: error.message || String(error) }));
+  }
+}
+
 async function clearAimeReaderLedColor() {
   try {
     const adapter = await ensureAimeReaderConnected();
@@ -4602,6 +4619,10 @@ function bindActions() {
 
   document.querySelector("#send-aime-reader-led").addEventListener("click", () => {
     sendAimeReaderLedColor();
+  });
+
+  document.querySelector("#send-aime-reader-led-raw").addEventListener("click", () => {
+    sendAimeReaderLedRawColor();
   });
 
   document.querySelector("#clear-aime-reader-led").addEventListener("click", () => {

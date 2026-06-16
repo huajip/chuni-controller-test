@@ -239,5 +239,7 @@
   "aime.cardNumber.uid": "UID",
   "aime.cardNumber.cardId": "卡片 ID",
   "aime.readerLedHex": "读卡器灯光 Hex",
-  "aime.readerLedOrder": "读卡器灯光顺序"
+  "aime.readerLedOrder": "读卡器灯光顺序",
+  "action.sendAimeReaderLedRaw": "裸发灯色",
+  "aime.readerLed.raw": "裸发"
 }
