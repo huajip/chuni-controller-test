@@ -180,6 +180,7 @@ const ui = {
   aimeReaderBaud: document.querySelector("#aime-reader-baud"),
   aimeReaderLedColor: document.querySelector("#aime-reader-led-color"),
   aimeReaderLedHex: document.querySelector("#aime-reader-led-hex"),
+  aimeReaderLedOrder: document.querySelector("#aime-reader-led-order"),
   aimeReaderLedBrightness: document.querySelector("#aime-reader-led-brightness"),
   aimeReaderLedBrightnessValue: document.querySelector("#aime-reader-led-brightness-value"),
   aimeReaderFw: document.querySelector("#aime-reader-fw"),
@@ -1728,10 +1729,11 @@ class AimeReaderSerialAdapter {
       return;
     }
 
+    const payload = mapReaderLedOrder(rgb);
     try {
-      await this.sendCommandNoResponse(SG_LED_ADDR, SG_LED_CMD_SET_COLOR, rgb, { silent: options.silent });
+      await this.sendCommandNoResponse(SG_LED_ADDR, SG_LED_CMD_SET_COLOR, payload, { silent: options.silent });
       if (!options.silent) {
-        appendAimeReaderLog(t("aime.log.readerLed", { reason: t(`aime.readerLed.${reason}`), rgb: formatHex(rgb) }));
+        appendAimeReaderLog(t("aime.log.readerLed", { reason: t(`aime.readerLed.${reason}`), rgb: formatHex(payload) }));
       }
     } catch (error) {
       appendAimeReaderLog(t("aime.log.readerLedFailed", { message: error.message || String(error) }));
@@ -4026,6 +4028,21 @@ function readerLedBrightness() {
 function scaleReaderLedRgb(rgb) {
   const scale = readerLedBrightness() / 100;
   return rgb.map((value) => Math.max(0, Math.min(255, Math.round(value * scale))));
+}
+
+function readerLedOrder() {
+  return String(ui.aimeReaderLedOrder?.value || "rgb").toLowerCase();
+}
+
+function mapReaderLedOrder(rgb) {
+  const values = {
+    r: rgb[0] || 0,
+    g: rgb[1] || 0,
+    b: rgb[2] || 0,
+  };
+  return readerLedOrder()
+    .split("")
+    .map((channel) => Math.max(0, Math.min(255, values[channel] || 0)));
 }
 
 function selectedReaderLedRgb() {

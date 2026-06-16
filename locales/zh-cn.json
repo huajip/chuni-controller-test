@@ -238,5 +238,6 @@
   "aime.card.unknown": "未知卡片",
   "aime.cardNumber.uid": "UID",
   "aime.cardNumber.cardId": "卡片 ID",
-  "aime.readerLedHex": "读卡器灯光 Hex"
+  "aime.readerLedHex": "读卡器灯光 Hex",
+  "aime.readerLedOrder": "读卡器灯光顺序"
 }
