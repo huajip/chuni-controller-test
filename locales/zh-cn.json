@@ -237,5 +237,6 @@
   "aime.readerLedBrightness": "读卡器灯光亮度",
   "aime.card.unknown": "未知卡片",
   "aime.cardNumber.uid": "UID",
-  "aime.cardNumber.cardId": "卡片 ID"
+  "aime.cardNumber.cardId": "卡片 ID",
+  "aime.readerLedHex": "读卡器灯光 Hex"
 }

@@ -145,6 +145,10 @@
           <span data-i18n="aime.readerLedColor">Reader LED Color</span>
           <input id="aime-reader-led-color" type="color" value="#ffffff">
         </label>
+        <label class="light-control">
+          <span data-i18n="aime.readerLedHex">Reader LED Hex</span>
+          <input id="aime-reader-led-hex" type="text" value="ffffff" maxlength="7" spellcheck="false" inputmode="latin">
+        </label>
         <label class="light-control reader-brightness-control">
           <span data-i18n="aime.readerLedBrightness">Reader LED Brightness</span>
           <input id="aime-reader-led-brightness" type="range" min="1" max="100" value="100">
@@ -262,6 +266,6 @@
     </div>
   </template>
 
-  <script type="module" src="./app.js?v=20260617-mifare-copy"></script>
+  <script type="module" src="./app.js?v=20260617-reader-led-hex"></script>
 </body>
 </html>

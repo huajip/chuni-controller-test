@@ -179,6 +179,7 @@ const ui = {
   aimeReaderMode: document.querySelector("#aime-reader-mode"),
   aimeReaderBaud: document.querySelector("#aime-reader-baud"),
   aimeReaderLedColor: document.querySelector("#aime-reader-led-color"),
+  aimeReaderLedHex: document.querySelector("#aime-reader-led-hex"),
   aimeReaderLedBrightness: document.querySelector("#aime-reader-led-brightness"),
   aimeReaderLedBrightnessValue: document.querySelector("#aime-reader-led-brightness-value"),
   aimeReaderFw: document.querySelector("#aime-reader-fw"),
@@ -3992,8 +3993,17 @@ let lightLoopBusy = false;
 let lastLightPayloadKey = "";
 let lastLightSendAt = 0;
 
+function parseColorHex(hex) {
+  const normalized = String(hex || "").trim().replace(/^#/, "");
+  return /^[0-9a-fA-F]{6}$/.test(normalized) ? normalized.toLowerCase() : "";
+}
+
+function normalizeColorHex(hex) {
+  return parseColorHex(hex) || "ffffff";
+}
+
 function hexToRgb(hex) {
-  const normalized = hex.replace("#", "");
+  const normalized = normalizeColorHex(hex);
   return {
     r: Number.parseInt(normalized.slice(0, 2), 16),
     g: Number.parseInt(normalized.slice(2, 4), 16),
@@ -4019,12 +4029,23 @@ function scaleReaderLedRgb(rgb) {
 }
 
 function selectedReaderLedRgb() {
-  return scaleReaderLedRgb(hexToReaderRgb(ui.aimeReaderLedColor?.value || "#ffffff"));
+  const hex = parseColorHex(ui.aimeReaderLedHex?.value) || parseColorHex(ui.aimeReaderLedColor?.value) || "ffffff";
+  return scaleReaderLedRgb(hexToReaderRgb(hex));
 }
 
 function updateReaderLedBrightnessLabel() {
   if (ui.aimeReaderLedBrightnessValue) {
     ui.aimeReaderLedBrightnessValue.textContent = `${readerLedBrightness()}%`;
+  }
+}
+
+function setReaderLedHex(hex, source = "") {
+  const normalized = normalizeColorHex(hex);
+  if (ui.aimeReaderLedHex && source !== "hex") {
+    ui.aimeReaderLedHex.value = normalized;
+  }
+  if (ui.aimeReaderLedColor && source !== "color") {
+    ui.aimeReaderLedColor.value = `#${normalized}`;
   }
 }
 
@@ -4537,6 +4558,17 @@ function bindActions() {
 
   ui.aimeReaderLedBrightness?.addEventListener("input", () => {
     updateReaderLedBrightnessLabel();
+  });
+
+  ui.aimeReaderLedColor?.addEventListener("input", () => {
+    setReaderLedHex(ui.aimeReaderLedColor.value, "color");
+  });
+
+  ui.aimeReaderLedHex?.addEventListener("input", () => {
+    const normalized = parseColorHex(ui.aimeReaderLedHex.value);
+    if (normalized) {
+      setReaderLedHex(normalized, "hex");
+    }
   });
 
   ui.aimeCardValue.addEventListener("click", (event) => {

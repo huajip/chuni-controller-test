@@ -237,5 +237,6 @@
   "aime.readerLedBrightness": "Reader LED Brightness",
   "aime.card.unknown": "Unknown Card",
   "aime.cardNumber.uid": "UID",
-  "aime.cardNumber.cardId": "Card ID"
+  "aime.cardNumber.cardId": "Card ID",
+  "aime.readerLedHex": "Reader LED Hex"
 }

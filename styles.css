@@ -453,6 +453,19 @@ h2 {
   min-width: 180px;
 }
 
+.reader-led-controls input[type="text"] {
+  width: 100%;
+  height: 34px;
+  margin-top: 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(6, 12, 20, 0.9);
+  color: var(--text);
+  font: inherit;
+  font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+  padding: 0 10px;
+}
+
 .reader-brightness-control {
   display: grid;
   grid-template-columns: minmax(140px, 1fr) auto;
