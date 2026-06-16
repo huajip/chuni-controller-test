@@ -71,6 +71,7 @@ const PN532_HOST_TO_DEVICE = 0xd4;
 const PN532_DEVICE_TO_HOST = 0xd5;
 const PN532_CMD_GET_FIRMWARE_VERSION = 0x02;
 const PN532_CMD_SAM_CONFIGURATION = 0x14;
+const PN532_CMD_RF_CONFIGURATION = 0x32;
 const PN532_CMD_IN_DATA_EXCHANGE = 0x40;
 const PN532_CMD_IN_LIST_PASSIVE_TARGET = 0x4a;
 const DEFAULT_LOCALE = "en-us";
@@ -1816,15 +1817,10 @@ class AimeReaderSerialAdapter {
 
   async pollDirectPn532CardOnce() {
     setAimeReaderStatusKey("aime.status.polling");
-    await this.sendPn532Command(PN532_CMD_SAM_CONFIGURATION, [0x01, 0x14, 0x01], 1800).catch(() => {});
-    const poll = await this.sendPn532Command(
-      PN532_CMD_IN_LIST_PASSIVE_TARGET,
-      [0x01, 0x01, 0xff, 0xff, 0x01, 0x00],
-      2200,
-    );
-    const parsed = parsePn532FelicaTarget(poll);
+    await this.ensurePn532Initialized();
+    const parsed = await this.pollPn532FelicaTarget();
     if (!parsed) {
-      throw new Error(t("aime.error.pn532FelicaTargetNotFound", { hex: formatHex(poll) || "-" }));
+      throw new Error(t("aime.error.pn532FelicaTargetNotFound", { hex: "-" }));
     }
 
     const cardInfo = describeFelicaCard(parsed.idm, parsed.pmm);
@@ -1849,6 +1845,72 @@ class AimeReaderSerialAdapter {
       }
     }
     setAimeReaderStatusKey("aime.status.cardFound");
+    return true;
+  }
+
+  async ensurePn532Initialized() {
+    await this.sendPn532Command(PN532_CMD_SAM_CONFIGURATION, [0x01, 0x14, 0x01], 1800).catch(() => {});
+    await this.sendPn532Command(PN532_CMD_RF_CONFIGURATION, [0x05, 0x02, 0x00, 0x00], 1800).catch(() => {});
+    await this.sendPn532Command(PN532_CMD_RF_CONFIGURATION, [0x01, 0x01], 1800).catch(() => {});
+  }
+
+  async pollPn532FelicaTarget() {
+    const attempts = [
+      [0x01, 0x01],
+      [0x01, 0x02],
+      [0x01, 0x01, 0x00, 0x88, 0xb4, 0x00, 0x03],
+      [0x01, 0x02, 0x00, 0x88, 0xb4, 0x00, 0x03],
+      [0x01, 0x01, 0x00, 0xfe, 0x00, 0x00, 0x03],
+      [0x01, 0x02, 0x00, 0xfe, 0x00, 0x00, 0x03],
+      [0x01, 0x01, 0x00, 0x00, 0x03, 0x00, 0x03],
+      [0x01, 0x02, 0x00, 0x00, 0x03, 0x00, 0x03],
+      [0x01, 0x01, 0x00, 0x80, 0x08, 0x00, 0x03],
+      [0x01, 0x02, 0x00, 0x80, 0x08, 0x00, 0x03],
+      [0x01, 0x01, 0x00, 0x80, 0x05, 0x00, 0x03],
+      [0x01, 0x02, 0x00, 0x80, 0x05, 0x00, 0x03],
+      [0x01, 0x01, 0x00, 0xff, 0xff, 0x00, 0x03],
+      [0x01, 0x02, 0x00, 0xff, 0xff, 0x00, 0x03],
+    ];
+    for (const payload of attempts) {
+      try {
+        const poll = await this.sendPn532Command(PN532_CMD_IN_LIST_PASSIVE_TARGET, payload, 2200);
+        const parsed = parsePn532FelicaTarget(poll);
+        if (parsed) {
+          return parsed;
+        }
+      } catch (_error) {
+      }
+    }
+    return null;
+  }
+
+  async runTimedPn532Scan(options = {}) {
+    const isCancelled = options.isCancelled || (() => false);
+    setAimeReaderStatusKey("aime.status.scanning");
+    clearAimeCardDisplay();
+    appendAimeReaderLog(t("aime.log.scanStarted", { seconds: AIME_READER_SCAN_DURATION_MS / 1000 }));
+
+    const deadline = Date.now() + AIME_READER_SCAN_DURATION_MS;
+    while (Date.now() < deadline) {
+      if (isCancelled()) {
+        setAimeReaderStatusKey("aime.status.connected");
+        appendAimeReaderLog(t("aime.log.scanCanceled"));
+        return null;
+      }
+      try {
+        if (await this.pollDirectPn532CardOnce()) {
+          appendAimeReaderLog(t("aime.log.scanCardFound"));
+          setAimeReaderStatusKey("aime.status.cardFound");
+          return true;
+        }
+      } catch (_error) {
+      }
+      await sleep(AIME_READER_SCAN_POLL_INTERVAL_MS);
+    }
+
+    setAimeReaderStatusKey("aime.status.noCard");
+    appendAimeReaderLog(t("aime.log.scanTimedOut"));
+    return false;
   }
 
   async readMifareDetails(uid) {
@@ -1966,6 +2028,7 @@ class HinataHidReaderAdapter extends AimeReaderSerialAdapter {
     await this.device.open();
     this.device.addEventListener("inputreport", this.handleInputReport);
     this.connected = true;
+    this.protocol = "hinata-pn532";
     setAimeReaderStatusKey("aime.status.connected");
     appendAimeReaderLog(t("aime.log.hinataHidConnected", {
       name: this.device.productName || "Hinata",
@@ -4467,7 +4530,11 @@ async function scanAimeReaderTimed() {
   setAimeReaderScanActive(true);
   try {
     const adapter = await ensureAimeReaderConnected();
-    await adapter.runTimedReaderScan({ isCancelled: () => scanToken.cancelled });
+    if (adapter.protocol === "sega") {
+      await adapter.runTimedReaderScan({ isCancelled: () => scanToken.cancelled });
+    } else {
+      await adapter.runTimedPn532Scan({ isCancelled: () => scanToken.cancelled });
+    }
   } catch (error) {
     if (!scanToken.cancelled) {
       await aimeReaderAdapter?.setReaderLed?.([0xff, 0x00, 0x00], "scan-error", { silent: true }).catch(() => {});
