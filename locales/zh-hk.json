@@ -240,8 +240,5 @@
   "aime.card.unknown": "未知卡片",
   "aime.cardNumber.uid": "UID",
   "aime.cardNumber.cardId": "卡片 ID",
-  "aime.readerLedHex": "讀卡器燈光 Hex",
-  "aime.readerLedOrder": "讀卡器燈光順序",
-  "action.sendAimeReaderLedRaw": "裸發燈色",
-  "aime.readerLed.raw": "裸發"
+  "aime.readerLedHex": "讀卡器燈光 Hex"
 }

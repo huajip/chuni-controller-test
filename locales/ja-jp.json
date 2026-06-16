@@ -240,8 +240,5 @@
   "aime.card.unknown": "Unknown Card",
   "aime.cardNumber.uid": "UID",
   "aime.cardNumber.cardId": "Card ID",
-  "aime.readerLedHex": "Reader LED Hex",
-  "aime.readerLedOrder": "Reader LED Order",
-  "action.sendAimeReaderLedRaw": "Send Raw LED",
-  "aime.readerLed.raw": "raw"
+  "aime.readerLedHex": "Reader LED Hex"
 }

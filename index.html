@@ -149,24 +149,12 @@
           <span data-i18n="aime.readerLedHex">Reader LED Hex</span>
           <input id="aime-reader-led-hex" type="text" value="ffffff" maxlength="7" spellcheck="false" inputmode="latin">
         </label>
-        <label class="light-control">
-          <span data-i18n="aime.readerLedOrder">Reader LED Order</span>
-          <select id="aime-reader-led-order">
-            <option value="rgb">RGB</option>
-            <option value="rbg">RBG</option>
-            <option value="grb">GRB</option>
-            <option value="gbr">GBR</option>
-            <option value="brg">BRG</option>
-            <option value="bgr">BGR</option>
-          </select>
-        </label>
         <label class="light-control reader-brightness-control">
           <span data-i18n="aime.readerLedBrightness">Reader LED Brightness</span>
           <input id="aime-reader-led-brightness" type="range" min="1" max="100" value="100">
           <strong id="aime-reader-led-brightness-value">100%</strong>
         </label>
         <button id="send-aime-reader-led" class="action" data-i18n="action.sendAimeReaderLed">Send Reader LED</button>
-        <button id="send-aime-reader-led-raw" class="action ghost" data-i18n="action.sendAimeReaderLedRaw">Send Raw LED</button>
         <button id="clear-aime-reader-led" class="action ghost" data-i18n="action.clearAimeReaderLed">Reader LED Off</button>
       </div>
       <pre id="aime-reader-log" class="raw-state" data-i18n="aime.noPackets">No reader packets yet.</pre>
@@ -278,6 +266,6 @@
     </div>
   </template>
 
-  <script type="module" src="./app.js?v=20260617-scan-cancel"></script>
+  <script type="module" src="./app.js?v=20260617-led-cleanup"></script>
 </body>
 </html>

@@ -181,7 +181,6 @@ const ui = {
   aimeReaderScanButton: document.querySelector("#scan-aime-reader"),
   aimeReaderLedColor: document.querySelector("#aime-reader-led-color"),
   aimeReaderLedHex: document.querySelector("#aime-reader-led-hex"),
-  aimeReaderLedOrder: document.querySelector("#aime-reader-led-order"),
   aimeReaderLedBrightness: document.querySelector("#aime-reader-led-brightness"),
   aimeReaderLedBrightnessValue: document.querySelector("#aime-reader-led-brightness-value"),
   aimeReaderFw: document.querySelector("#aime-reader-fw"),
@@ -1523,10 +1522,8 @@ class AimeReaderSerialAdapter {
 
   async sendCommandNoResponseNow(addr, cmd, payload = [], options = {}) {
     const data = Array.from(payload);
-    const seq = Number.isInteger(options.seqOverride) ? options.seqOverride & 0xff : this.seq;
-    if (!Number.isInteger(options.seqOverride)) {
-      this.seq = (this.seq + 1) & 0xff;
-    }
+    const seq = this.seq;
+    this.seq = (this.seq + 1) & 0xff;
     const frame = [5 + data.length, addr, seq, cmd, data.length, ...data];
     const encoded = encodeSgFrame(frame);
     if (!options.silent && AIME_READER_DEBUG_LOG) {
@@ -1752,14 +1749,10 @@ class AimeReaderSerialAdapter {
       return;
     }
 
-    const payload = mapReaderLedOrder(rgb);
     try {
-      await this.sendCommandNoResponse(SG_LED_ADDR, SG_LED_CMD_SET_COLOR, payload, {
-        silent: options.silent,
-        seqOverride: 0x00,
-      });
+      await this.sendCommandNoResponse(SG_LED_ADDR, SG_LED_CMD_SET_COLOR, rgb, { silent: options.silent });
       if (!options.silent) {
-        appendAimeReaderLog(t("aime.log.readerLed", { reason: t(`aime.readerLed.${reason}`), rgb: formatHex(payload) }));
+        appendAimeReaderLog(t("aime.log.readerLed", { reason: t(`aime.readerLed.${reason}`), rgb: formatHex(rgb) }));
       }
     } catch (error) {
       appendAimeReaderLog(t("aime.log.readerLedFailed", { message: error.message || String(error) }));
@@ -4057,21 +4050,6 @@ function scaleReaderLedRgb(rgb) {
   return rgb.map((value) => Math.max(0, Math.min(255, Math.round(value * scale))));
 }
 
-function readerLedOrder() {
-  return String(ui.aimeReaderLedOrder?.value || "rgb").toLowerCase();
-}
-
-function mapReaderLedOrder(rgb) {
-  const values = {
-    r: rgb[0] || 0,
-    g: rgb[1] || 0,
-    b: rgb[2] || 0,
-  };
-  return readerLedOrder()
-    .split("")
-    .map((channel) => Math.max(0, Math.min(255, values[channel] || 0)));
-}
-
 function selectedReaderLedRgb() {
   const hex = parseColorHex(ui.aimeReaderLedHex?.value) || parseColorHex(ui.aimeReaderLedColor?.value) || "ffffff";
   return scaleReaderLedRgb(hexToReaderRgb(hex));
@@ -4430,23 +4408,6 @@ async function sendAimeReaderLedColor() {
   }
 }
 
-async function sendAimeReaderLedRawColor() {
-  try {
-    const adapter = await ensureAimeReaderConnected();
-    if (adapter.protocol !== "sega") {
-      throw new Error(t("aime.error.readerLedRequiresSega"));
-    }
-    const hex = parseColorHex(ui.aimeReaderLedHex?.value) || parseColorHex(ui.aimeReaderLedColor?.value) || "ffffff";
-    const rgb = hexToReaderRgb(hex);
-    const frame = encodeSgFrame([0x08, SG_LED_ADDR, 0x00, SG_LED_CMD_SET_COLOR, 0x03, ...rgb]);
-    await adapter.writeBytes(frame);
-    appendAimeReaderLog(t("aime.log.readerLed", { reason: t("aime.readerLed.raw"), rgb: formatHex(rgb) }));
-  } catch (error) {
-    setAimeReaderStatus(`Reader COM: ${error.message || String(error)}`, true);
-    appendAimeReaderLog(t("aime.log.error", { message: error.message || String(error) }));
-  }
-}
-
 async function clearAimeReaderLedColor() {
   try {
     const adapter = await ensureAimeReaderConnected();
@@ -4666,10 +4627,6 @@ function bindActions() {
 
   document.querySelector("#send-aime-reader-led").addEventListener("click", () => {
     sendAimeReaderLedColor();
-  });
-
-  document.querySelector("#send-aime-reader-led-raw").addEventListener("click", () => {
-    sendAimeReaderLedRawColor();
   });
 
   document.querySelector("#clear-aime-reader-led").addEventListener("click", () => {
