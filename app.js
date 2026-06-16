@@ -121,6 +121,7 @@ const state = {
   aimeReaderStatusKey: "aime.status.disconnected",
   aimeReaderStatusText: "",
   aimeReaderLog: [],
+  aimeLookupSeq: 0,
   optionsStatusKey: "status.idle",
   optionsStatusText: "",
   lightMode: "active",
@@ -1649,9 +1650,6 @@ class AimeReaderSerialAdapter {
 
     const cardInfo = describeFelicaCard(parsed.idm, parsed.pmm);
     showFelicaCardNumbers(parsed.idm, cardInfo);
-    appendAimeReaderLog(t(cardInfo.valid ? "aime.log.felicaValid" : "aime.log.felicaUnsupported", {
-      reason: cardInfo.reason,
-    }));
     await this.readFelicaSpad0(parsed.idm, parsed.pmm, cardInfo, { throwOnError: throwOnReadError });
     if (manageLed) {
       await this.setReaderLed([0x00, 0x40, 0x00], "card");
@@ -1744,17 +1742,18 @@ class AimeReaderSerialAdapter {
         appendAimeReaderLog(t("aime.log.felicaAccessCodeRead"));
       } else {
         showFelicaCardNumbers(idm, cardInfo);
-        const error = new Error(t("aime.error.felicaAccessCodeInvalid"));
-        if (options.throwOnError) {
-          throw error;
+        const lookupCode = await lookupFelicaAccessCode(idm, pmm, spad0, cardInfo);
+        if (lookupCode) {
+          appendAimeReaderLog(t("aime.log.felicaAccessCodeRead"));
         }
-        appendAimeReaderLog(error.message);
+        return;
       }
     } catch (error) {
-      appendAimeReaderLog(t("aime.log.felicaSpad0Failed", { message: error.message || String(error) }));
-      if (options.throwOnError) {
-        throw error;
+      const lookupCode = await lookupFelicaAccessCode(idm, pmm, [], cardInfo);
+      if (lookupCode) {
+        appendAimeReaderLog(t("aime.log.felicaAccessCodeRead"));
       }
+      return;
     }
   }
 
@@ -1787,9 +1786,6 @@ class AimeReaderSerialAdapter {
     }
 
     const cardInfo = describeFelicaCard(parsed.idm, parsed.pmm);
-    appendAimeReaderLog(t(cardInfo.valid ? "aime.log.pn532FelicaValid" : "aime.log.pn532FelicaUnsupported", {
-      reason: cardInfo.reason,
-    }));
     showFelicaCardNumbers(parsed.idm, cardInfo);
 
     const inner = buildFelicaReadWithoutEncryption(parsed.idm, FELICA_LITES_READ_ONLY_SERVICE, 0);
@@ -1804,7 +1800,10 @@ class AimeReaderSerialAdapter {
       appendAimeReaderLog(t("aime.log.felicaAccessCodeRead"));
     } else {
       showFelicaCardNumbers(parsed.idm, cardInfo);
-      throw new Error(t("aime.error.felicaAccessCodeInvalid"));
+      const lookupCode = await lookupFelicaAccessCode(parsed.idm, parsed.pmm, spad0, cardInfo);
+      if (lookupCode) {
+        appendAimeReaderLog(t("aime.log.felicaAccessCodeRead"));
+      }
     }
     setAimeReaderStatusKey("aime.status.cardFound");
   }
@@ -1821,15 +1820,7 @@ class AimeReaderSerialAdapter {
       try {
         const block = await this.sendCommand(SG_NFC_ADDR, SG_CMD_MIFARE_READ_BLOCK, [...uid, blockNo], 1800);
         blocks[blockNo] = block.payload.slice(0, 16);
-        appendAimeReaderLog(t("aime.log.block", {
-          block: blockNo,
-          hex: formatHex(blocks[blockNo]),
-        }));
       } catch (error) {
-        appendAimeReaderLog(t("aime.log.blockFailed", {
-          block: blockNo,
-          message: error.message || String(error),
-        }));
       }
     }
 
@@ -1868,13 +1859,8 @@ class AimeReaderSerialAdapter {
         await this.sendCommand(SG_NFC_ADDR, attempt.setKeyCommand, attempt.key, 1500);
         await this.sendCommand(SG_NFC_ADDR, SG_CMD_MIFARE_SELECT_TAG, uid, 1500);
         await this.sendCommand(SG_NFC_ADDR, attempt.authCommand, [...uid, blockNo], 1500);
-        appendAimeReaderLog(t("aime.log.mifareAuthOk", { key: t(attempt.labelKey) }));
         return true;
       } catch (error) {
-        appendAimeReaderLog(t("aime.log.mifareAuthFailed", {
-          key: t(attempt.labelKey),
-          message: error.message || String(error),
-        }));
       }
     }
 
@@ -3289,6 +3275,39 @@ function showFelicaCardNumbers(idm, cardInfo, accessCode = "") {
   renderAimeCardNumbers(buildFelicaCardNumbers(idm, accessCode));
 }
 
+async function lookupFelicaAccessCode(idm, pmm, spad0, cardInfo, accessCode = "") {
+  const lookupSeq = ++state.aimeLookupSeq;
+  const idmHex = normalizeCardHex(idm);
+  const pmmHex = normalizeCardHex(pmm);
+  const spad0Hex = normalizeCardHex(spad0).toLowerCase();
+  const body = { idm: idmHex, pmm: pmmHex };
+  if (/^[0-9a-f]{32}$/.test(spad0Hex)) {
+    body.spad0 = spad0Hex;
+  }
+
+  try {
+    const response = await fetch("https://api.jinale.com/api/felica/lookup", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Requested-With": "XMLHttpRequest",
+      },
+      body: JSON.stringify(body),
+    });
+    if (!response.ok) {
+      return;
+    }
+    const json = await response.json();
+    const lookupCode = Number(json?.code || 0) > 0 ? String(json?.data || "") : "";
+    if (lookupSeq === state.aimeLookupSeq && lookupCode) {
+      showFelicaCardNumbers(idm, cardInfo, lookupCode);
+    }
+    return lookupCode;
+  } catch (_error) {
+    return "";
+  }
+}
+
 function parsePn532FelicaTarget(payload) {
   if (!payload?.length || payload[0] < 1) {
     return null;
@@ -3497,6 +3516,7 @@ function clearAimeReaderLog() {
 }
 
 function clearAimeCardDisplay() {
+  state.aimeLookupSeq += 1;
   ui.aimeCardType.textContent = "-";
   ui.aimeCardValue.textContent = "-";
 }
