@@ -234,5 +234,8 @@
   "action.copied": "已複製",
   "aime.copyCardNumber": "複製 {label}",
   "aime.log.copyFailed": "複製失敗：{message}",
-  "aime.readerLedBrightness": "讀卡器燈光亮度"
+  "aime.readerLedBrightness": "讀卡器燈光亮度",
+  "aime.card.unknown": "未知卡片",
+  "aime.cardNumber.uid": "UID",
+  "aime.cardNumber.cardId": "卡片 ID"
 }

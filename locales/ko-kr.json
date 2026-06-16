@@ -234,5 +234,8 @@
   "action.copied": "Copied",
   "aime.copyCardNumber": "Copy {label}",
   "aime.log.copyFailed": "Copy failed: {message}",
-  "aime.readerLedBrightness": "Reader LED Brightness"
+  "aime.readerLedBrightness": "Reader LED Brightness",
+  "aime.card.unknown": "Unknown Card",
+  "aime.cardNumber.uid": "UID",
+  "aime.cardNumber.cardId": "Card ID"
 }

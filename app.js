@@ -1638,9 +1638,17 @@ class AimeReaderSerialAdapter {
     }
 
     if (parsed.type === "mifare") {
-      ui.aimeCardType.textContent = t("aime.card.mifare");
-      ui.aimeCardValue.textContent = formatHex(parsed.uid);
+      showMifareCardNumbers(parsed.uid);
       await this.readMifareDetails(parsed.uid);
+      if (manageLed) {
+        await this.setReaderLed([0x00, 0x40, 0x00], "card");
+      }
+      setAimeReaderStatusKey("aime.status.cardFound");
+      return true;
+    }
+
+    if (parsed.type === "unknown") {
+      showGenericCardNumbers(parsed.id);
       if (manageLed) {
         await this.setReaderLed([0x00, 0x40, 0x00], "card");
       }
@@ -1813,7 +1821,6 @@ class AimeReaderSerialAdapter {
   async readMifareDetails(uid) {
     const authenticated = await this.authenticateMifareSector(uid, 0);
     if (!authenticated) {
-      appendAimeReaderLog(t("aime.log.mifareSectorAuthFailed", { sector: 0 }));
       return;
     }
 
@@ -1829,8 +1836,9 @@ class AimeReaderSerialAdapter {
     const accessBytes = blocks[2]?.slice(6, 16);
     if (accessBytes?.length === 10) {
       const accessCode = bcdBytesToText(accessBytes);
-      ui.aimeCardType.textContent = t("aime.card.mifareAime");
-      ui.aimeCardValue.textContent = accessCode || formatHex(accessBytes);
+      if (accessCode) {
+        showMifareCardNumbers(uid, accessCode);
+      }
     }
   }
 
@@ -3235,6 +3243,25 @@ function buildFelicaCardNumbers(idm, accessCode = "") {
     .map(([label, value]) => ({ label, value }));
 }
 
+function buildMifareCardNumbers(uid, accessCode = "") {
+  const rawUid = normalizeCardHex(uid);
+  return [
+    [t("aime.cardNumber.accessCode"), accessCode],
+    [t("aime.cardNumber.uid"), rawUid],
+  ]
+    .filter(([, value]) => value)
+    .map(([label, value]) => ({ label, value }));
+}
+
+function buildGenericCardNumbers(id) {
+  const rawId = normalizeCardHex(id);
+  return [
+    [t("aime.cardNumber.cardId"), rawId],
+  ]
+    .filter(([, value]) => value)
+    .map(([label, value]) => ({ label, value }));
+}
+
 function renderAimeCardNumbers(entries) {
   ui.aimeCardValue.replaceChildren();
   if (!entries.length) {
@@ -3275,6 +3302,16 @@ function showFelicaCardNumbers(idm, cardInfo, accessCode = "") {
     ? t("aime.card.felicaAccessCode", { model: cardInfo.label })
     : t("aime.card.felicaModel", { model: cardInfo.label });
   renderAimeCardNumbers(buildFelicaCardNumbers(idm, accessCode));
+}
+
+function showMifareCardNumbers(uid, accessCode = "") {
+  ui.aimeCardType.textContent = accessCode ? t("aime.card.mifareAime") : t("aime.card.mifare");
+  renderAimeCardNumbers(buildMifareCardNumbers(uid, accessCode));
+}
+
+function showGenericCardNumbers(id) {
+  ui.aimeCardType.textContent = t("aime.card.unknown");
+  renderAimeCardNumbers(buildGenericCardNumbers(id));
 }
 
 async function lookupFelicaAccessCode(idm, pmm, spad0, cardInfo, accessCode = "") {
