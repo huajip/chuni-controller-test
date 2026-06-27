@@ -43,6 +43,7 @@ const BUNDLED_DEMOS = {
     audio: "./assets/bad-apple-sekai.mp3",
   },
 };
+const DEMO_MANIFEST_URL = "./assets/demo-manifest.json";
 const TOUCH_COM_RELEASE_HOLD_MS = 400;
 const TOUCH_COM_EMPTY_PACKET_HOLD_MS = 5000;
 const TOUCH_THRESHOLD_STORAGE_KEY = "controller-test-touch-threshold";
@@ -4428,6 +4429,7 @@ let videoPreviewTimer = null;
 let lastBillboardPreview = null;
 let billboardWriteBusy = false;
 let demoMediaPlayInProgress = false;
+let bakedPausedElapsedSec = 0;
 let lastLightPayloadKey = "";
 let lastLightSendAt = 0;
 
@@ -5041,9 +5043,7 @@ function sampleVideoLighting() {
 }
 
 async function playBundledBadAppleDemo() {
-  const demo = BUNDLED_DEMOS[ui.videoDemo?.value] ?? BUNDLED_DEMOS["bad-apple"];
-  const hasVideo = await bundledAssetExists(demo.video);
-  const hasAudio = await bundledAssetExists(demo.audio);
+  const demo = await resolveBundledDemo(ui.videoDemo?.value);
 
   try {
     const response = await fetch(demo.frames, { cache: "no-store" });
@@ -5053,27 +5053,39 @@ async function playBundledBadAppleDemo() {
 
     state.bakedLedFrames = normalizeBakedLedFrames(await response.json());
     state.bakedLedStartedAt = performance.now();
-    if (hasVideo) {
-      await playBundledVideo(demo.video, hasAudio ? demo.audio : "");
-      setPauseButtonPaused(false);
-    } else {
-      ui.videoPreview.pause();
-      ui.demoAudio?.pause();
-      setPauseButtonPaused(true);
-    }
+    bakedPausedElapsedSec = 0;
     setVideoStatus("video.status.badAppleFrames");
     state.lightMode = "baked";
     startBakedPreviewLoop();
     sendLights("baked");
+
+    const hasVideo = await bundledAssetExists(demo.video);
+    if (!hasVideo) {
+      ui.videoPreview.pause();
+      clearDemoAudioSource();
+      setPauseButtonPaused(true);
+      return;
+    }
+
+    const hasAudio = await bundledAssetExists(demo.audio);
+    try {
+      await playBundledVideo(demo.video, hasAudio ? demo.audio : "");
+      setPauseButtonPaused(false);
+    } catch (error) {
+      setPauseButtonPaused(true);
+      setVideoStatus("video.status.error", { message: error.message || String(error) });
+    }
     return;
   } catch (_error) {
     state.bakedLedFrames = null;
   }
 
   try {
+    const hasVideo = await bundledAssetExists(demo.video);
     if (!hasVideo) {
       throw new Error("Bundled Bad Apple video not found");
     }
+    const hasAudio = await bundledAssetExists(demo.audio);
     await playBundledVideo(demo.video, hasAudio ? demo.audio : "");
     setPauseButtonPaused(false);
     setVideoStatus("video.status.badAppleFile");
@@ -5084,6 +5096,41 @@ async function playBundledBadAppleDemo() {
     stopBakedPreviewLoop();
     setVideoStatus("video.status.badAppleFallback");
     sendLights("badapple");
+  }
+}
+
+async function resolveBundledDemo(key) {
+  const demoKey = key && BUNDLED_DEMOS[key] ? key : "bad-apple";
+  const localDemo = BUNDLED_DEMOS[demoKey];
+  const remoteDemo = await loadRemoteDemo(demoKey);
+
+  return {
+    ...localDemo,
+    video: remoteDemo.video || localDemo.video,
+    audio: remoteDemo.audio || localDemo.audio,
+    frames: localDemo.frames,
+  };
+}
+
+async function loadRemoteDemo(key) {
+  try {
+    const response = await fetch(DEMO_MANIFEST_URL, { cache: "no-store" });
+    if (!response.ok) {
+      return {};
+    }
+
+    const manifest = await response.json();
+    const demo = manifest?.demos?.[key];
+    if (!demo || typeof demo !== "object") {
+      return {};
+    }
+
+    return {
+      video: typeof demo.video === "string" ? demo.video : "",
+      audio: typeof demo.audio === "string" ? demo.audio : "",
+    };
+  } catch (_error) {
+    return {};
   }
 }
 
@@ -5886,6 +5933,20 @@ function bindActions() {
   });
 
   ui.videoPause.addEventListener("click", () => {
+    if (state.bakedLedFrames && state.lightMode === "baked" && bakedPreviewTimer === null) {
+      state.bakedLedStartedAt = performance.now() - bakedPausedElapsedSec * 1000;
+      startBakedPreviewLoop();
+      if (ui.videoPreview.src && ui.videoPreview.paused) {
+        playVideoWithDemoAudio().catch((error) => {
+          setVideoStatus("video.status.error", { message: error.message || String(error) });
+        });
+      }
+      sendLights("baked");
+      setPauseButtonPaused(false);
+      setVideoStatus("video.status.badAppleFrames");
+      return;
+    }
+
     if (ui.videoPreview.paused && ui.videoPreview.src) {
       playVideoWithDemoAudio().then(() => {
         if (state.bakedLedFrames) {
@@ -5905,6 +5966,9 @@ function bindActions() {
       return;
     }
 
+    if (state.bakedLedFrames && state.lightMode === "baked") {
+      bakedPausedElapsedSec = Math.max(0, (performance.now() - state.bakedLedStartedAt) / 1000);
+    }
     ui.videoPreview.pause();
     ui.demoAudio?.pause();
     stopBakedPreviewLoop();
