@@ -4424,6 +4424,7 @@ let aimeReaderScanToken = null;
 let lightLoopTimer = null;
 let lightLoopBusy = false;
 let bakedPreviewTimer = null;
+let videoPreviewTimer = null;
 let lastBillboardPreview = null;
 let billboardWriteBusy = false;
 let demoMediaPlayInProgress = false;
@@ -4684,6 +4685,20 @@ function setPauseButtonPaused(paused) {
   }
 }
 
+function hasDemoAudioSource() {
+  return Boolean(ui.demoAudio?.getAttribute("src"));
+}
+
+function clearDemoAudioSource() {
+  if (!ui.demoAudio) {
+    return;
+  }
+
+  ui.demoAudio.pause();
+  ui.demoAudio.removeAttribute("src");
+  ui.demoAudio.load();
+}
+
 function updateVideoPreviewAspect() {
   if (!ui.videoPreview?.videoWidth || !ui.videoPreview?.videoHeight) {
     return;
@@ -4901,8 +4916,16 @@ function stopBakedPreviewLoop() {
   }
 }
 
+function stopVideoPreviewLoop() {
+  if (videoPreviewTimer !== null) {
+    clearInterval(videoPreviewTimer);
+    videoPreviewTimer = null;
+  }
+}
+
 function startBakedPreviewLoop() {
   stopBakedPreviewLoop();
+  stopVideoPreviewLoop();
   buildBakedLighting(performance.now());
   bakedPreviewTimer = setInterval(() => {
     if (!state.bakedLedFrames || state.lightMode !== "baked") {
@@ -4910,6 +4933,23 @@ function startBakedPreviewLoop() {
       return;
     }
     const lighting = buildBakedLighting(performance.now());
+    if (lighting?.cab) {
+      sendBillboardCab(lighting.cab, { silent: true });
+    }
+  }, 33);
+}
+
+function startVideoPreviewLoop() {
+  stopVideoPreviewLoop();
+  stopBakedPreviewLoop();
+  sampleVideoLighting();
+  videoPreviewTimer = setInterval(() => {
+    if (ui.videoPreview.paused || ui.videoPreview.ended || state.lightMode !== "video") {
+      stopVideoPreviewLoop();
+      return;
+    }
+
+    const lighting = sampleVideoLighting();
     if (lighting?.cab) {
       sendBillboardCab(lighting.cab, { silent: true });
     }
@@ -5089,12 +5129,14 @@ async function playVideoWithDemoAudio() {
   try {
     const plays = [ui.videoPreview.play()];
 
-    if (ui.demoAudio?.src) {
+    if (hasDemoAudioSource()) {
       ui.videoPreview.muted = true;
       ui.demoAudio.muted = false;
       ui.demoAudio.volume = 1;
       ui.demoAudio.currentTime = ui.videoPreview.currentTime;
       plays.push(ui.demoAudio.play());
+    } else {
+      ui.videoPreview.muted = false;
     }
 
     const results = await Promise.allSettled(plays);
@@ -5756,6 +5798,7 @@ function bindActions() {
   ui.videoFile.addEventListener("change", () => {
     const [file] = ui.videoFile.files ?? [];
     stopBakedPreviewLoop();
+    stopVideoPreviewLoop();
     state.bakedLedFrames = null;
 
     if (state.videoUrl) {
@@ -5765,17 +5808,20 @@ function bindActions() {
 
     if (!file) {
       ui.videoPreview.removeAttribute("src");
+      ui.videoPreview.load();
       ui.videoPreview.muted = false;
-      ui.demoAudio?.pause();
-      ui.demoAudio?.removeAttribute("src");
+      clearDemoAudioSource();
       setVideoStatus("video.status.empty");
+      drawBillboardPreview({
+        left: Array.from({ length: 66 }, () => ({ r: 0, g: 0, b: 0 })),
+        right: Array.from({ length: 66 }, () => ({ r: 0, g: 0, b: 0 })),
+      });
       updateVideoLedPreview(Array.from({ length: 31 }, () => ({ r: 0, g: 0, b: 0 })));
       return;
     }
 
     state.videoUrl = URL.createObjectURL(file);
-    ui.demoAudio?.pause();
-    ui.demoAudio?.removeAttribute("src");
+    clearDemoAudioSource();
     ui.videoPreview.muted = false;
     ui.videoPreview.src = state.videoUrl;
     ui.videoPreview.load();
@@ -5829,6 +5875,8 @@ function bindActions() {
 
     try {
       await playVideoWithDemoAudio();
+      state.lightMode = "video";
+      startVideoPreviewLoop();
       setPauseButtonPaused(false);
       setVideoStatus("video.status.playing");
       sendLights("video");
@@ -5846,6 +5894,8 @@ function bindActions() {
           startBakedPreviewLoop();
           sendLights("baked");
         } else {
+          state.lightMode = "video";
+          startVideoPreviewLoop();
           sendLights("video");
         }
         setPauseButtonPaused(false);
@@ -5858,6 +5908,7 @@ function bindActions() {
     ui.videoPreview.pause();
     ui.demoAudio?.pause();
     stopBakedPreviewLoop();
+    stopVideoPreviewLoop();
     setPauseButtonPaused(true);
     setVideoStatus("video.status.paused");
   });
@@ -5867,7 +5918,7 @@ function bindActions() {
   });
 
   ui.videoPreview.addEventListener("seeked", () => {
-    if (ui.demoAudio?.src) {
+    if (hasDemoAudioSource()) {
       ui.demoAudio.currentTime = ui.videoPreview.currentTime;
     }
   });
@@ -5877,7 +5928,7 @@ function bindActions() {
     if (demoMediaPlayInProgress) {
       return;
     }
-    if (ui.demoAudio?.src && ui.demoAudio.paused) {
+    if (hasDemoAudioSource() && ui.demoAudio.paused) {
       ui.demoAudio.currentTime = ui.videoPreview.currentTime;
       ui.demoAudio.play().catch(() => {});
     }
@@ -5885,13 +5936,13 @@ function bindActions() {
 
   ui.videoPreview.addEventListener("pause", () => {
     setPauseButtonPaused(true);
-    if (ui.demoAudio?.src) {
+    if (hasDemoAudioSource()) {
       ui.demoAudio.pause();
     }
   });
 
   ui.videoPreview.addEventListener("timeupdate", () => {
-    if (!ui.demoAudio?.src || ui.videoPreview.paused) {
+    if (!hasDemoAudioSource() || ui.videoPreview.paused) {
       return;
     }
 
@@ -5902,6 +5953,8 @@ function bindActions() {
 
   ui.videoPreview.addEventListener("ended", () => {
     ui.demoAudio?.pause();
+    stopBakedPreviewLoop();
+    stopVideoPreviewLoop();
     setPauseButtonPaused(true);
     setVideoStatus("video.status.paused");
   });
