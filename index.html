@@ -203,7 +203,63 @@
       <div class="control-group">
         <button id="lights-solid" class="action" data-i18n="action.sendSolid">Send Solid</button>
         <button id="lights-active" class="action" data-i18n="action.sendActive">Send Active Inputs</button>
+        <button id="lights-rainbow" class="action" data-i18n="action.rainbow">Rainbow</button>
+        <button id="lights-scan" class="action" data-i18n="action.scan">Scan</button>
+        <button id="lights-checker" class="action" data-i18n="action.checker">Checker</button>
         <button id="lights-clear" class="action ghost" data-i18n="action.allOff">All Off</button>
+      </div>
+
+      <div class="video-test">
+        <div class="section-head">
+          <h3 data-i18n="section.video">Video LED Test</h3>
+          <span id="video-status" class="muted" data-i18n="video.status.empty">No video loaded</span>
+        </div>
+        <div class="video-grid">
+          <label class="light-control">
+            <span data-i18n="video.demo">Demo</span>
+            <select id="video-demo">
+              <option value="bad-apple" data-i18n="video.demo.badApple">Bad Apple</option>
+              <option value="bad-apple-sekai" data-i18n="video.demo.sekai">Bad Apple SEKAI</option>
+            </select>
+          </label>
+          <label class="light-control">
+            <span data-i18n="video.file">Video File</span>
+            <input id="video-file" type="file" accept="video/*">
+          </label>
+          <label class="light-control">
+            <span data-i18n="video.sampleRow">Sample Row</span>
+            <div class="range-control">
+              <input id="video-row-range" type="range" min="0" max="100" step="1" value="50">
+              <input id="video-row" type="number" min="0" max="100" step="1" value="50">
+            </div>
+          </label>
+          <label class="light-control">
+            <span data-i18n="video.brightness">Brightness</span>
+            <div class="range-control">
+              <input id="video-brightness-range" type="range" min="10" max="300" step="5" value="120">
+              <input id="video-brightness" type="number" min="10" max="300" step="5" value="120">
+            </div>
+          </label>
+          <label class="light-control">
+            <span data-i18n="video.contrast">Contrast</span>
+            <div class="range-control">
+              <input id="video-contrast-range" type="range" min="0" max="250" step="5" value="110">
+              <input id="video-contrast" type="number" min="0" max="250" step="5" value="110">
+            </div>
+          </label>
+        </div>
+        <div class="video-stage">
+          <video id="video-preview" playsinline loop controls preload="metadata"></video>
+          <audio id="demo-audio" preload="metadata" loop></audio>
+          <canvas id="video-sampler" width="31" height="1" hidden></canvas>
+          <canvas id="billboard-preview" class="billboard-preview"></canvas>
+          <div id="video-led-preview" class="video-led-preview" hidden></div>
+        </div>
+        <div class="control-group">
+          <button id="bad-apple-demo" class="action" data-i18n="action.playDemo">Play Demo</button>
+          <button id="video-play" class="action" data-i18n="action.videoPlay">Play Video LEDs</button>
+          <button id="video-pause" class="action ghost" data-i18n="action.videoPause">Pause</button>
+        </div>
       </div>
     </section>
 
@@ -268,6 +324,6 @@
     </div>
   </template>
 
-  <script type="module" src="./app.js?v=20260617-hinata-hid-scan"></script>
+  <script type="module" src="./app.js?v=20260626-video-led"></script>
 </body>
 </html>

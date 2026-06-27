@@ -27,6 +27,18 @@ const SLIDER_TX_REPORT_DISABLE = 0x04;
 const LIGHT_LOOP_INTERVAL_MS = 16;
 const LIGHT_KEEPALIVE_MS = 500;
 const TASOLLER_LIGHT_WARMUP_MS = 1000;
+const BUNDLED_DEMOS = {
+  "bad-apple": {
+    frames: "./assets/bad-apple-led.json",
+    video: "./assets/bad-apple.mp4",
+    audio: "./assets/bad-apple.mp3",
+  },
+  "bad-apple-sekai": {
+    frames: "./assets/bad-apple-sekai-led.json",
+    video: "./assets/bad-apple-sekai.mp4",
+    audio: "./assets/bad-apple-sekai.mp3",
+  },
+};
 const TOUCH_COM_RELEASE_HOLD_MS = 400;
 const TOUCH_COM_EMPTY_PACKET_HOLD_MS = 5000;
 const TOUCH_THRESHOLD_STORAGE_KEY = "controller-test-touch-threshold";
@@ -76,6 +88,39 @@ const PN532_CMD_IN_DATA_EXCHANGE = 0x40;
 const PN532_CMD_IN_LIST_PASSIVE_TARGET = 0x4a;
 const DEFAULT_LOCALE = "en-us";
 const SUPPORTED_LOCALES = ["zh-hk", "zh-cn", "zh-tw", "en-us", "ko-kr", "ja-jp"];
+const DEFAULT_MESSAGES = {
+  "action.rainbow": "Rainbow",
+  "action.scan": "Scan",
+  "action.checker": "Checker",
+  "action.badAppleDemo": "Play Demo",
+  "action.playDemo": "Play Demo",
+  "action.videoPlay": "Play Video LEDs",
+  "action.videoPause": "Pause",
+  "action.videoResume": "Resume",
+  "section.video": "Video LED Test",
+  "video.demo": "Demo",
+  "video.demo.badApple": "Bad Apple",
+  "video.demo.sekai": "Bad Apple SEKAI",
+  "video.file": "Video File",
+  "video.sampleRow": "Sample Row",
+  "video.brightness": "Brightness",
+  "video.contrast": "Contrast",
+  "video.status.empty": "No video loaded",
+  "video.status.loaded": "Loaded: {name}",
+  "video.status.playing": "Video LED playback running",
+  "video.status.badApple": "Built-in Bad Apple demo running",
+  "video.status.badAppleFrames": "Bundled Bad Apple LED frames running",
+  "video.status.badAppleFile": "Bundled Bad Apple video loaded",
+  "video.status.badAppleFallback": "Bundled Bad Apple video not found; running generated demo",
+  "video.status.paused": "Video paused",
+  "video.status.error": "Video error: {message}",
+  "mode.rainbow": "rainbow",
+  "mode.scan": "scan",
+  "mode.checker": "checker",
+  "mode.video": "video",
+  "mode.badapple": "Bad Apple demo",
+  "mode.baked": "baked LED frames",
+};
 const TASOLLER_OPTIONS_DBT_TRIGGER_PAYLOAD = Uint8Array.from([
   0x68, 0xdd, 0xc8, 0x00, 0x00, 0x00, 0x00, 0x00,
   0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
@@ -112,6 +157,9 @@ const state = {
   touchComZeroFrames: Array(32).fill(0),
   touchComLastActiveAt: Array(32).fill(0),
   lastTouchComNonEmptyAt: 0,
+  videoUrl: "",
+  bakedLedFrames: null,
+  bakedLedStartedAt: 0,
   raw: {},
   connectionKey: "status.disconnected",
   connectionText: "",
@@ -158,6 +206,23 @@ const ui = {
   colorLeftAir: document.querySelector("#color-left-air"),
   colorRightAir: document.querySelector("#color-right-air"),
   colorCard: document.querySelector("#color-card"),
+  videoFile: document.querySelector("#video-file"),
+  videoDemo: document.querySelector("#video-demo"),
+  videoPreview: document.querySelector("#video-preview"),
+  demoAudio: document.querySelector("#demo-audio"),
+  videoSampler: document.querySelector("#video-sampler"),
+  billboardPreview: document.querySelector("#billboard-preview"),
+  videoLedPreview: document.querySelector("#video-led-preview"),
+  videoStatus: document.querySelector("#video-status"),
+  videoPlay: document.querySelector("#video-play"),
+  videoPause: document.querySelector("#video-pause"),
+  videoRow: document.querySelector("#video-row"),
+  videoRowRange: document.querySelector("#video-row-range"),
+  videoBrightness: document.querySelector("#video-brightness"),
+  videoBrightnessRange: document.querySelector("#video-brightness-range"),
+  videoContrast: document.querySelector("#video-contrast"),
+  videoContrastRange: document.querySelector("#video-contrast-range"),
+  badAppleDemo: document.querySelector("#bad-apple-demo"),
   connectionStatus: document.querySelector("#connection-status"),
   deviceName: document.querySelector("#device-name"),
   activeSummary: document.querySelector("#active-summary"),
@@ -202,7 +267,7 @@ function interpolate(template, params = {}) {
 }
 
 function t(key, params = {}) {
-  return interpolate(i18n.messages[key] ?? key, params);
+  return interpolate(i18n.messages[key] ?? DEFAULT_MESSAGES[key] ?? key, params);
 }
 
 async function loadLocale(locale) {
@@ -3131,6 +3196,19 @@ function buildGrid() {
       ui.optionsAirCells.push(node);
     }
   }
+
+  if (ui.videoLedPreview) {
+    for (let index = 0; index < 31; index++) {
+      const node = document.createElement("span");
+      node.className = "video-led-dot";
+      ui.videoLedPreview.appendChild(node);
+    }
+  }
+
+  drawBillboardPreview({
+    left: Array.from({ length: 66 }, () => ({ r: 0, g: 0, b: 0 })),
+    right: Array.from({ length: 66 }, () => ({ r: 0, g: 0, b: 0 })),
+  });
 }
 
 function setStatusKey(key, isError = false) {
@@ -4188,6 +4266,8 @@ let aimeReaderAdapter = null;
 let aimeReaderScanToken = null;
 let lightLoopTimer = null;
 let lightLoopBusy = false;
+let bakedPreviewTimer = null;
+let lastBillboardPreview = null;
 let lastLightPayloadKey = "";
 let lastLightSendAt = 0;
 
@@ -4251,6 +4331,67 @@ function cloneColor(color) {
   return { r: color.r, g: color.g, b: color.b };
 }
 
+function clampByte(value) {
+  return Math.max(0, Math.min(255, Math.round(value)));
+}
+
+function scaleColor(color, factor) {
+  return {
+    r: clampByte(color.r * factor),
+    g: clampByte(color.g * factor),
+    b: clampByte(color.b * factor),
+  };
+}
+
+function hslToRgb(h, s, l) {
+  const hue = ((h % 360) + 360) % 360;
+  const c = (1 - Math.abs(2 * l - 1)) * s;
+  const x = c * (1 - Math.abs((hue / 60) % 2 - 1));
+  const m = l - c / 2;
+  let r = 0;
+  let g = 0;
+  let b = 0;
+
+  if (hue < 60) {
+    r = c;
+    g = x;
+  } else if (hue < 120) {
+    r = x;
+    g = c;
+  } else if (hue < 180) {
+    g = c;
+    b = x;
+  } else if (hue < 240) {
+    g = x;
+    b = c;
+  } else if (hue < 300) {
+    r = x;
+    b = c;
+  } else {
+    r = c;
+    b = x;
+  }
+
+  return {
+    r: clampByte((r + m) * 255),
+    g: clampByte((g + m) * 255),
+    b: clampByte((b + m) * 255),
+  };
+}
+
+function colorCss(color) {
+  return `rgb(${color.r}, ${color.g}, ${color.b})`;
+}
+
+function syncNumberPair(input, range, value) {
+  const parsed = Number.parseInt(value, 10);
+  const min = Number.parseInt(input.min || range.min || "0", 10);
+  const max = Number.parseInt(input.max || range.max || "100", 10);
+  const next = String(Math.max(min, Math.min(max, Number.isNaN(parsed) ? min : parsed)));
+  input.value = next;
+  range.value = next;
+}
+
 function getGapIndices(mode) {
   switch (mode) {
     case "4k":
@@ -4262,6 +4403,525 @@ function getGapIndices(mode) {
     default:
       return [];
   }
+}
+
+function buildAnimationLighting(mode, now) {
+  const off = { r: 0, g: 0, b: 0 };
+  const slider = Array.from({ length: 31 }, () => cloneColor(off));
+  const phase = now / 1000;
+
+  if (mode === "rainbow") {
+    for (let index = 0; index < slider.length; index++) {
+      slider[index] = hslToRgb(index * 360 / slider.length + phase * 120, 0.95, 0.5);
+    }
+    return {
+      slider,
+      leftAir: hslToRgb(phase * 120, 0.95, 0.5),
+      rightAir: hslToRgb(phase * 120 + 180, 0.95, 0.5),
+      card: hslToRgb(phase * 90 + 60, 0.9, 0.55),
+    };
+  }
+
+  if (mode === "scan") {
+    const head = Math.floor((phase * 16) % slider.length);
+    const color = hexToRgb(ui.colorSliderActive.value);
+    for (let index = 0; index < slider.length; index++) {
+      const distance = Math.min(
+        Math.abs(index - head),
+        slider.length - Math.abs(index - head)
+      );
+      slider[index] = distance > 5 ? cloneColor(off) : scaleColor(color, 1 - distance / 6);
+    }
+    return {
+      slider,
+      leftAir: head < slider.length / 2 ? color : off,
+      rightAir: head >= slider.length / 2 ? color : off,
+      card: color,
+    };
+  }
+
+  if (mode === "checker") {
+    const a = hexToRgb(ui.colorSlider.value);
+    const b = hexToRgb(ui.colorGap.value);
+    const flip = Math.floor(phase * 4) & 1;
+    for (let index = 0; index < slider.length; index++) {
+      slider[index] = ((index + flip) & 1) === 0 ? cloneColor(a) : cloneColor(b);
+    }
+    return {
+      slider,
+      leftAir: flip ? b : a,
+      rightAir: flip ? a : b,
+      card: flip ? b : a,
+    };
+  }
+
+  if (mode === "badapple") {
+    const scene = Math.floor(phase * 1.6) % 8;
+    const wipe = (Math.sin(phase * 0.72) + 1) / 2;
+    const center = 0.5 + Math.sin(phase * 0.9) * 0.23;
+    const radius = 0.12 + (Math.sin(phase * 1.7) + 1) * 0.04;
+    const wave = Math.sin(phase * 3.2);
+
+    for (let index = 0; index < slider.length; index++) {
+      const x = index / (slider.length - 1);
+      const body = Math.abs(x - center) < radius + Math.max(0, wave) * 0.03;
+      const skirt = Math.abs(x - center) < radius * 1.9 &&
+        x > center - radius * 2.2 &&
+        x < center + radius * 2.2 &&
+        Math.sin((x - center) * 22 + phase * 2) > -0.5;
+      const tree = Math.sin(x * 34 + phase * 0.8) > 0.72;
+      const curtain = Math.sin((x + phase * 0.08) * 18) > 0.45;
+      const diagonal = x < wipe;
+      let white;
+
+      switch (scene) {
+        case 0:
+        case 1:
+          white = diagonal !== (body || skirt);
+          break;
+        case 2:
+        case 3:
+          white = (tree || x > 1 - wipe) && !(body && index % 2 === 0);
+          break;
+        case 4:
+        case 5:
+          white = curtain !== skirt;
+          break;
+        default:
+          white = (Math.sin(x * 16 - phase * 4) > 0) !== body;
+          break;
+      }
+
+      const level = white ? 255 : 0;
+      slider[index] = { r: level, g: level, b: level };
+    }
+
+    updateVideoLedPreview(slider);
+
+    return {
+      slider,
+      leftAir: slider.slice(0, 8).some((color) => color.r > 0) ?
+        { r: 255, g: 255, b: 255 } :
+        off,
+      rightAir: slider.slice(-8).some((color) => color.r > 0) ?
+        { r: 255, g: 255, b: 255 } :
+        off,
+      card: slider[15] ?? off,
+    };
+  }
+
+  return null;
+}
+
+function setVideoStatus(key, params = {}) {
+  if (ui.videoStatus) {
+    ui.videoStatus.textContent = t(key, params);
+  }
+}
+
+function setPauseButtonPaused(paused) {
+  if (ui.videoPause) {
+    ui.videoPause.textContent = t(paused ? "action.videoResume" : "action.videoPause");
+  }
+}
+
+function updateVideoPreviewAspect() {
+  if (!ui.videoPreview?.videoWidth || !ui.videoPreview?.videoHeight) {
+    return;
+  }
+
+  ui.videoPreview.style.setProperty(
+    "--video-aspect",
+    `${ui.videoPreview.videoWidth} / ${ui.videoPreview.videoHeight}`
+  );
+}
+
+function updateVideoLedPreview(colors) {
+  if (!ui.videoLedPreview) {
+    return;
+  }
+
+  Array.from(ui.videoLedPreview.children).forEach((node, index) => {
+    const color = colors[index] ?? { r: 0, g: 0, b: 0 };
+    node.style.background = colorCss(color);
+    node.style.boxShadow = `0 0 14px ${colorCss(color)}`;
+  });
+}
+
+function drawBillboardPreview(cab) {
+  const canvas = ui.billboardPreview;
+  if (!canvas) {
+    return;
+  }
+  lastBillboardPreview = cab;
+
+  const rect = canvas.getBoundingClientRect();
+  const pixelRatio = window.devicePixelRatio || 1;
+  canvas.width = Math.max(320, Math.floor(rect.width * pixelRatio));
+  canvas.height = Math.max(180, Math.floor(rect.height * pixelRatio));
+
+  const ctx = canvas.getContext("2d");
+  ctx.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
+  const width = canvas.width / pixelRatio;
+  const height = canvas.height / pixelRatio;
+  ctx.clearRect(0, 0, width, height);
+  ctx.fillStyle = "#10151d";
+  ctx.fillRect(0, 0, width, height);
+
+  const left = cab?.left ?? [];
+  const right = cab?.right ?? [];
+  const rows = 10;
+  const cols = 11;
+  const pad = 10;
+  const gap = 4;
+  const cellW = Math.floor((width - pad * 2 - gap * (cols - 1)) / cols);
+  const cellH = Math.floor((height - pad * 2 - gap * (rows - 1)) / rows);
+  const size = Math.max(4, Math.min(cellW, cellH));
+  const originX = Math.floor((width - (size * cols + gap * (cols - 1))) / 2);
+  const originY = Math.floor((height - (size * rows + gap * (rows - 1))) / 2);
+
+  for (let col = 0; col < cols; col++) {
+    for (let row = 0; row < rows; row++) {
+      const index = col < 5 ? col * 10 + row : (col - 5) * 10 + row;
+      const colors = col < 5 ? left : right;
+      const color = colors[index] ?? { r: 0, g: 0, b: 0 };
+      const x = originX + col * (size + gap);
+      const y = originY + row * (size + gap);
+      const lit = color.r || color.g || color.b;
+      ctx.fillStyle = lit ? colorCss(color) : "rgba(6, 12, 20, 0.98)";
+      ctx.fillRect(x, y, size, size);
+      ctx.strokeStyle = lit ? "rgba(255, 255, 255, 0.24)" : "rgba(157, 178, 202, 0.24)";
+      ctx.strokeRect(x + 0.5, y + 0.5, size - 1, size - 1);
+      if (lit) {
+        ctx.shadowColor = colorCss(color);
+        ctx.shadowBlur = 10;
+        ctx.strokeStyle = "rgba(255, 255, 255, 0.18)";
+        ctx.strokeRect(x + 1.5, y + 1.5, size - 3, size - 3);
+        ctx.shadowBlur = 0;
+      }
+    }
+  }
+}
+
+function decodeBase64Bytes(base64) {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index++) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+  return bytes;
+}
+
+function normalizeBakedLedFrames(data) {
+  if (!data || data.version !== 1 || !data.frames) {
+    throw new Error("Unsupported LED frame data");
+  }
+
+  const fps = Number(data.fps);
+  if (!Number.isFinite(fps) || fps <= 0) {
+    throw new Error("Invalid LED frame rate");
+  }
+
+  const bytes = decodeBase64Bytes(data.frames);
+  const layout = data.layout ?? data.source?.layout ?? "slider";
+  const leds = Number(data.leds ?? 31);
+  const frameSize = layout === "billboard"
+    ? (Number(data.leftLeds ?? 66) + Number(data.rightLeds ?? 66)) * 3
+    : leds * 3;
+  const frameCount = Math.floor(bytes.length / frameSize);
+  if (frameCount <= 0) {
+    throw new Error("LED frame data is empty");
+  }
+
+  return {
+    fps,
+    layout,
+    leds,
+    leftLeds: Number(data.leftLeds ?? 66),
+    rightLeds: Number(data.rightLeds ?? 66),
+    bytes,
+    frameSize,
+    frameCount,
+    loop: data.loop !== false,
+  };
+}
+
+function buildBakedLighting(now) {
+  const data = state.bakedLedFrames;
+  if (!data) {
+    return null;
+  }
+
+  const elapsed = Math.max(0, (now - state.bakedLedStartedAt) / 1000);
+  let frameIndex = Math.floor(elapsed * data.fps);
+  if (data.loop) {
+    frameIndex %= data.frameCount;
+  } else if (frameIndex >= data.frameCount) {
+    frameIndex = data.frameCount - 1;
+  }
+
+  const offset = frameIndex * data.frameSize;
+  if (data.layout === "billboard") {
+    const left = Array.from({ length: data.leftLeds }, (_unused, index) => {
+      const base = offset + index * 3;
+      return {
+        r: data.bytes[base] ?? 0,
+        g: data.bytes[base + 1] ?? 0,
+        b: data.bytes[base + 2] ?? 0,
+      };
+    });
+    const rightOffset = offset + data.leftLeds * 3;
+    const right = Array.from({ length: data.rightLeds }, (_unused, index) => {
+      const base = rightOffset + index * 3;
+      return {
+        r: data.bytes[base] ?? 0,
+        g: data.bytes[base + 1] ?? 0,
+        b: data.bytes[base + 2] ?? 0,
+      };
+    });
+    const slider = Array.from({ length: 31 }, (_unused, index) => {
+      const col = Math.min(10, Math.floor(index * 11 / 31));
+      const row = 9;
+      const source = col < 5 ? left[col * 10 + row] : right[(col - 5) * 10 + row];
+      return source ?? { r: 0, g: 0, b: 0 };
+    });
+
+    drawBillboardPreview({ left, right });
+    updateVideoLedPreview(slider);
+
+    return {
+      slider,
+      leftAir: left[50] ?? { r: 0, g: 0, b: 0 },
+      rightAir: right[60] ?? { r: 0, g: 0, b: 0 },
+      card: slider[15] ?? { r: 0, g: 0, b: 0 },
+      cab: { left, right },
+    };
+  }
+
+  const slider = Array.from({ length: data.leds }, (_unused, index) => {
+    const base = offset + index * 3;
+    return {
+      r: data.bytes[base] ?? 0,
+      g: data.bytes[base + 1] ?? 0,
+      b: data.bytes[base + 2] ?? 0,
+    };
+  });
+  const leftAir = slider.slice(0, 8).reduce((acc, color) => ({
+    r: acc.r + color.r / 8,
+    g: acc.g + color.g / 8,
+    b: acc.b + color.b / 8,
+  }), { r: 0, g: 0, b: 0 });
+  const rightAir = slider.slice(-8).reduce((acc, color) => ({
+    r: acc.r + color.r / 8,
+    g: acc.g + color.g / 8,
+    b: acc.b + color.b / 8,
+  }), { r: 0, g: 0, b: 0 });
+
+  updateVideoLedPreview(slider);
+
+  return {
+    slider,
+    leftAir: {
+      r: clampByte(leftAir.r),
+      g: clampByte(leftAir.g),
+      b: clampByte(leftAir.b),
+    },
+    rightAir: {
+      r: clampByte(rightAir.r),
+      g: clampByte(rightAir.g),
+      b: clampByte(rightAir.b),
+    },
+    card: slider[15] ?? { r: 0, g: 0, b: 0 },
+  };
+}
+
+function stopBakedPreviewLoop() {
+  if (bakedPreviewTimer !== null) {
+    clearInterval(bakedPreviewTimer);
+    bakedPreviewTimer = null;
+  }
+}
+
+function startBakedPreviewLoop() {
+  stopBakedPreviewLoop();
+  buildBakedLighting(performance.now());
+  bakedPreviewTimer = setInterval(() => {
+    if (!state.bakedLedFrames || state.lightMode !== "baked") {
+      stopBakedPreviewLoop();
+      return;
+    }
+    buildBakedLighting(performance.now());
+  }, 33);
+}
+
+function sampleVideoLighting() {
+  const video = ui.videoPreview;
+  const canvas = ui.videoSampler;
+  if (!video || !canvas || !video.videoWidth || !video.videoHeight) {
+    return null;
+  }
+
+  const ctx = canvas.getContext("2d", { willReadFrequently: true });
+  const rowPercent = Number.parseInt(ui.videoRow.value, 10) / 100;
+  const sampleY = Math.max(
+    0,
+    Math.min(video.videoHeight - 1, Math.floor(video.videoHeight * rowPercent))
+  );
+
+  canvas.width = 11;
+  canvas.height = 10;
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  const sourceH = Math.max(1, Math.floor(video.videoHeight / 3));
+  const sourceY = Math.max(0, Math.min(video.videoHeight - sourceH, sampleY - Math.floor(sourceH / 2)));
+  ctx.drawImage(video, 0, sourceY, video.videoWidth, sourceH, 0, 0, canvas.width, canvas.height);
+
+  const image = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+  const brightness = Number.parseInt(ui.videoBrightness.value, 10) / 100;
+  const contrast = Number.parseInt(ui.videoContrast.value, 10) / 100;
+  const left = Array.from({ length: 66 }, () => ({ r: 0, g: 0, b: 0 }));
+  const right = Array.from({ length: 66 }, () => ({ r: 0, g: 0, b: 0 }));
+
+  for (let col = 0; col < 11; col++) {
+    for (let row = 0; row < 10; row++) {
+      const base = (row * 11 + col) * 4;
+      const color = {
+        r: clampByte((image[base + 0] - 128) * contrast + 128 * brightness),
+        g: clampByte((image[base + 1] - 128) * contrast + 128 * brightness),
+        b: clampByte((image[base + 2] - 128) * contrast + 128 * brightness),
+      };
+      if (col < 5) {
+        left[col * 10 + row] = color;
+      } else {
+        right[(col - 5) * 10 + row] = color;
+      }
+    }
+  }
+
+  const slider = Array.from({ length: 31 }, (_unused, index) => {
+    const col = Math.min(10, Math.floor(index * 11 / 31));
+    const row = 9;
+    const source = col < 5 ? left[col * 10 + row] : right[(col - 5) * 10 + row];
+    return {
+      r: source?.r ?? 0,
+      g: source?.g ?? 0,
+      b: source?.b ?? 0,
+    };
+  });
+  const leftAir = slider.slice(0, 8).reduce((acc, color) => ({
+    r: acc.r + color.r / 8,
+    g: acc.g + color.g / 8,
+    b: acc.b + color.b / 8,
+  }), { r: 0, g: 0, b: 0 });
+  const rightAir = slider.slice(-8).reduce((acc, color) => ({
+    r: acc.r + color.r / 8,
+    g: acc.g + color.g / 8,
+    b: acc.b + color.b / 8,
+  }), { r: 0, g: 0, b: 0 });
+
+  drawBillboardPreview({ left, right });
+  updateVideoLedPreview(slider);
+
+  return {
+    slider,
+    leftAir: {
+      r: clampByte(leftAir.r),
+      g: clampByte(leftAir.g),
+      b: clampByte(leftAir.b),
+    },
+    rightAir: {
+      r: clampByte(rightAir.r),
+      g: clampByte(rightAir.g),
+      b: clampByte(rightAir.b),
+    },
+    card: slider[15] ?? { r: 0, g: 0, b: 0 },
+    cab: { left, right },
+  };
+}
+
+async function playBundledBadAppleDemo() {
+  const demo = BUNDLED_DEMOS[ui.videoDemo?.value] ?? BUNDLED_DEMOS["bad-apple"];
+  const hasVideo = await bundledAssetExists(demo.video);
+  const hasAudio = await bundledAssetExists(demo.audio);
+
+  try {
+    const response = await fetch(demo.frames, { cache: "no-store" });
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+
+    state.bakedLedFrames = normalizeBakedLedFrames(await response.json());
+    state.bakedLedStartedAt = performance.now();
+    if (hasVideo) {
+      await playBundledVideo(demo.video, hasAudio ? demo.audio : "");
+      setPauseButtonPaused(false);
+    } else {
+      ui.videoPreview.pause();
+      ui.demoAudio?.pause();
+      setPauseButtonPaused(true);
+    }
+    setVideoStatus("video.status.badAppleFrames");
+    state.lightMode = "baked";
+    startBakedPreviewLoop();
+    sendLights("baked");
+    return;
+  } catch (_error) {
+    state.bakedLedFrames = null;
+  }
+
+  try {
+    if (!hasVideo) {
+      throw new Error("Bundled Bad Apple video not found");
+    }
+    await playBundledVideo(demo.video, hasAudio ? demo.audio : "");
+    setPauseButtonPaused(false);
+    setVideoStatus("video.status.badAppleFile");
+    sendLights("video");
+  } catch (_error) {
+    ui.videoPreview.pause();
+    ui.demoAudio?.pause();
+    stopBakedPreviewLoop();
+    setVideoStatus("video.status.badAppleFallback");
+    sendLights("badapple");
+  }
+}
+
+async function bundledAssetExists(url) {
+  if (!url) {
+    return false;
+  }
+
+  try {
+    const response = await fetch(url, { method: "HEAD", cache: "no-store" });
+    return response.ok;
+  } catch (_error) {
+    return false;
+  }
+}
+
+async function playBundledVideo(videoUrl, audioUrl = "") {
+  if (state.videoUrl) {
+    URL.revokeObjectURL(state.videoUrl);
+    state.videoUrl = "";
+  }
+
+  if (!ui.videoPreview.src.includes(videoUrl)) {
+    ui.videoPreview.src = `${videoUrl}?v=${Date.now()}`;
+  }
+  if (ui.demoAudio && audioUrl && !ui.demoAudio.src.includes(audioUrl)) {
+    ui.demoAudio.src = `${audioUrl}?v=${Date.now()}`;
+  }
+  ui.videoPreview.currentTime = 0;
+  if (ui.demoAudio) {
+    ui.demoAudio.currentTime = 0;
+  }
+  ui.videoPreview.muted = Boolean(audioUrl);
+  ui.videoPreview.load();
+  if (ui.demoAudio && audioUrl) {
+    ui.demoAudio.load();
+  }
+  const videoPlay = ui.videoPreview.play();
+  const audioPlay = ui.demoAudio && audioUrl ? ui.demoAudio.play() : Promise.resolve();
+  await Promise.all([videoPlay, audioPlay]);
 }
 
 function sliderLedIsActive(index) {
@@ -4298,6 +4958,26 @@ function lightingPayloadKey(lighting) {
 }
 
 function buildLightingPayload(mode) {
+  const now = performance.now();
+  if (mode === "baked") {
+    const baked = buildBakedLighting(now);
+    if (baked) {
+      return baked;
+    }
+  }
+
+  const animated = buildAnimationLighting(mode, now);
+  if (animated) {
+    return animated;
+  }
+
+  if (mode === "video") {
+    const videoLighting = sampleVideoLighting();
+    if (videoLighting) {
+      return videoLighting;
+    }
+  }
+
   const sliderBaseColor = hexToRgb(ui.colorSlider.value);
   const sliderActiveColor = hexToRgb(ui.colorSliderActive.value);
   const gapColor = hexToRgb(ui.colorGap.value);
@@ -4871,8 +5551,170 @@ function bindActions() {
     sendLights("active");
   });
 
+  document.querySelector("#lights-rainbow").addEventListener("click", () => {
+    sendLights("rainbow");
+  });
+
+  document.querySelector("#lights-scan").addEventListener("click", () => {
+    sendLights("scan");
+  });
+
+  document.querySelector("#lights-checker").addEventListener("click", () => {
+    sendLights("checker");
+  });
+
   document.querySelector("#lights-clear").addEventListener("click", () => {
     sendLights("clear");
+  });
+
+  ui.videoFile.addEventListener("change", () => {
+    const [file] = ui.videoFile.files ?? [];
+    stopBakedPreviewLoop();
+    state.bakedLedFrames = null;
+
+    if (state.videoUrl) {
+      URL.revokeObjectURL(state.videoUrl);
+      state.videoUrl = "";
+    }
+
+    if (!file) {
+      ui.videoPreview.removeAttribute("src");
+      ui.videoPreview.muted = false;
+      ui.demoAudio?.pause();
+      ui.demoAudio?.removeAttribute("src");
+      setVideoStatus("video.status.empty");
+      updateVideoLedPreview(Array.from({ length: 31 }, () => ({ r: 0, g: 0, b: 0 })));
+      return;
+    }
+
+    state.videoUrl = URL.createObjectURL(file);
+    ui.demoAudio?.pause();
+    ui.demoAudio?.removeAttribute("src");
+    ui.videoPreview.muted = false;
+    ui.videoPreview.src = state.videoUrl;
+    ui.videoPreview.load();
+    setVideoStatus("video.status.loaded", { name: file.name });
+  });
+
+  ui.badAppleDemo.addEventListener("click", () => {
+    playBundledBadAppleDemo();
+  });
+
+  ui.videoPlay.addEventListener("click", async () => {
+    stopBakedPreviewLoop();
+    if (!ui.videoPreview.src) {
+      setVideoStatus("video.status.empty");
+      return;
+    }
+
+    try {
+      await ui.videoPreview.play();
+      setPauseButtonPaused(false);
+      setVideoStatus("video.status.playing");
+      sendLights("video");
+    } catch (error) {
+      setVideoStatus("video.status.error", { message: error.message || String(error) });
+    }
+  });
+
+  ui.videoPause.addEventListener("click", () => {
+    if (ui.videoPreview.paused && ui.videoPreview.src) {
+      ui.videoPreview.play().then(() => {
+        if (ui.demoAudio?.src) {
+          ui.demoAudio.currentTime = ui.videoPreview.currentTime;
+          ui.demoAudio.play().catch(() => {});
+        }
+        if (state.bakedLedFrames) {
+          state.bakedLedStartedAt = performance.now() - ui.videoPreview.currentTime * 1000;
+          state.lightMode = "baked";
+          startBakedPreviewLoop();
+          sendLights("baked");
+        } else {
+          sendLights("video");
+        }
+        setPauseButtonPaused(false);
+      }).catch((error) => {
+        setVideoStatus("video.status.error", { message: error.message || String(error) });
+      });
+      return;
+    }
+
+    ui.videoPreview.pause();
+    ui.demoAudio?.pause();
+    stopBakedPreviewLoop();
+    setPauseButtonPaused(true);
+    setVideoStatus("video.status.paused");
+  });
+
+  ui.videoPreview.addEventListener("loadedmetadata", () => {
+    updateVideoPreviewAspect();
+  });
+
+  ui.videoPreview.addEventListener("seeked", () => {
+    if (ui.demoAudio?.src) {
+      ui.demoAudio.currentTime = ui.videoPreview.currentTime;
+    }
+  });
+
+  ui.videoPreview.addEventListener("play", () => {
+    setPauseButtonPaused(false);
+    if (ui.demoAudio?.src && ui.demoAudio.paused) {
+      ui.demoAudio.currentTime = ui.videoPreview.currentTime;
+      ui.demoAudio.play().catch(() => {});
+    }
+  });
+
+  ui.videoPreview.addEventListener("pause", () => {
+    setPauseButtonPaused(true);
+    if (ui.demoAudio?.src) {
+      ui.demoAudio.pause();
+    }
+  });
+
+  ui.videoPreview.addEventListener("timeupdate", () => {
+    if (!ui.demoAudio?.src || ui.videoPreview.paused) {
+      return;
+    }
+
+    if (Math.abs(ui.demoAudio.currentTime - ui.videoPreview.currentTime) > 0.25) {
+      ui.demoAudio.currentTime = ui.videoPreview.currentTime;
+    }
+  });
+
+  ui.videoPreview.addEventListener("ended", () => {
+    ui.demoAudio?.pause();
+    setPauseButtonPaused(true);
+    setVideoStatus("video.status.paused");
+  });
+
+  ui.videoRow.addEventListener("input", () => {
+    syncNumberPair(ui.videoRow, ui.videoRowRange, ui.videoRow.value);
+  });
+
+  ui.videoRowRange.addEventListener("input", () => {
+    syncNumberPair(ui.videoRow, ui.videoRowRange, ui.videoRowRange.value);
+  });
+
+  ui.videoBrightness.addEventListener("input", () => {
+    syncNumberPair(ui.videoBrightness, ui.videoBrightnessRange, ui.videoBrightness.value);
+  });
+
+  ui.videoBrightnessRange.addEventListener("input", () => {
+    syncNumberPair(ui.videoBrightness, ui.videoBrightnessRange, ui.videoBrightnessRange.value);
+  });
+
+  ui.videoContrast.addEventListener("input", () => {
+    syncNumberPair(ui.videoContrast, ui.videoContrastRange, ui.videoContrast.value);
+  });
+
+  ui.videoContrastRange.addEventListener("input", () => {
+    syncNumberPair(ui.videoContrast, ui.videoContrastRange, ui.videoContrastRange.value);
+  });
+
+  window.addEventListener("resize", () => {
+    if (lastBillboardPreview) {
+      drawBillboardPreview(lastBillboardPreview);
+    }
   });
 
   ui.optionsRestart.addEventListener("click", async () => {
