@@ -24,6 +24,10 @@ const SLIDER_CMD_REPORT_ENABLE = 0x03;
 const SLIDER_CMD_REPORT_DISABLE = 0x04;
 const SLIDER_TX_REPORT = 0x01;
 const SLIDER_TX_REPORT_DISABLE = 0x04;
+const LED15093_SYNC = 0xe0;
+const LED15093_ESCAPE = 0xd0;
+const LED15093_CMD_SET_LED_DIRECT = 0x82;
+const LED15093_DEFAULT_BAUD = 115200;
 const LIGHT_LOOP_INTERVAL_MS = 16;
 const LIGHT_KEEPALIVE_MS = 500;
 const TASOLLER_LIGHT_WARMUP_MS = 1000;
@@ -97,6 +101,10 @@ const DEFAULT_MESSAGES = {
   "action.videoPlay": "Play Video LEDs",
   "action.videoPause": "Pause",
   "action.videoResume": "Resume",
+  "action.connectLedBoardLeft": "Connect LED Left",
+  "action.connectLedBoardRight": "Connect LED Right",
+  "action.disconnectLedBoards": "Disconnect LED Boards",
+  "action.sendBillboard": "Send Billboard",
   "section.video": "Video LED Test",
   "video.demo": "Demo",
   "video.demo.badApple": "Bad Apple",
@@ -216,6 +224,10 @@ const ui = {
   videoStatus: document.querySelector("#video-status"),
   videoPlay: document.querySelector("#video-play"),
   videoPause: document.querySelector("#video-pause"),
+  connectLedBoardLeft: document.querySelector("#connect-led-board-left"),
+  connectLedBoardRight: document.querySelector("#connect-led-board-right"),
+  disconnectLedBoards: document.querySelector("#disconnect-led-boards"),
+  sendBillboard: document.querySelector("#send-billboard"),
   videoRow: document.querySelector("#video-row"),
   videoRowRange: document.querySelector("#video-row-range"),
   videoBrightness: document.querySelector("#video-brightness"),
@@ -2867,6 +2879,151 @@ class TouchSerialAdapter {
   }
 }
 
+class Led15093SerialAdapter {
+  constructor(label) {
+    this.label = label;
+    this.port = null;
+    this.writer = null;
+    this.connected = false;
+    this.writeQueue = Promise.resolve();
+  }
+
+  async connect() {
+    if (!("serial" in navigator)) {
+      throw new Error(t("error.webserialUnsupported"));
+    }
+
+    this.port = await navigator.serial.requestPort();
+    await this.port.open({ baudRate: LED15093_DEFAULT_BAUD });
+    this.writer = this.port.writable.getWriter();
+    this.connected = true;
+    setVideoStatus("video.status.loaded", { name: `${this.label} LED board connected` });
+  }
+
+  async disconnect() {
+    this.connected = false;
+
+    if (this.writer) {
+      try {
+        this.writer.releaseLock();
+      } catch (_error) {
+      }
+      this.writer = null;
+    }
+
+    if (this.port) {
+      try {
+        await this.port.close();
+      } catch (_error) {
+      }
+      this.port = null;
+    }
+  }
+
+  async writeColors(colors) {
+    if (!this.connected || !this.writer) {
+      throw new Error(`${this.label} LED board is not connected`);
+    }
+
+    const payload = new Uint8Array(198);
+    const off = { r: 0, g: 0, b: 0 };
+    for (let index = 0; index < 66; index++) {
+      const color = colors[index] ?? off;
+      const base = index * 3;
+      payload[base + 0] = clampByte(color.r);
+      payload[base + 1] = clampByte(color.g);
+      payload[base + 2] = clampByte(color.b);
+    }
+
+    await this.writeFrame(LED15093_CMD_SET_LED_DIRECT, payload);
+  }
+
+  async writeFrame(command, payload) {
+    const body = [0x02, 0x01, payload.length + 1, command, ...payload];
+    const checksum = body.reduce((sum, value) => (sum + value) & 0xff, 0);
+    const encoded = [LED15093_SYNC];
+
+    [...body, checksum].forEach((value) => {
+      if (value === LED15093_SYNC || value === LED15093_ESCAPE) {
+        encoded.push(LED15093_ESCAPE, (value - 1) & 0xff);
+      } else {
+        encoded.push(value);
+      }
+    });
+
+    const bytes = Uint8Array.from(encoded);
+    this.writeQueue = this.writeQueue
+      .catch(() => {})
+      .then(() => this.writer.write(bytes));
+    await this.writeQueue;
+  }
+}
+
+let ledBoardLeftAdapter = null;
+let ledBoardRightAdapter = null;
+
+async function connectLedBoard(side) {
+  const isLeft = side === "left";
+  const next = new Led15093SerialAdapter(isLeft ? "Left" : "Right");
+  await next.connect();
+  if (isLeft) {
+    if (ledBoardLeftAdapter?.connected) {
+      await ledBoardLeftAdapter.disconnect();
+    }
+    ledBoardLeftAdapter = next;
+  } else {
+    if (ledBoardRightAdapter?.connected) {
+      await ledBoardRightAdapter.disconnect();
+    }
+    ledBoardRightAdapter = next;
+  }
+}
+
+async function disconnectLedBoards() {
+  const adapters = [ledBoardLeftAdapter, ledBoardRightAdapter];
+  ledBoardLeftAdapter = null;
+  ledBoardRightAdapter = null;
+  await Promise.all(adapters.map((adapter) => adapter?.disconnect().catch(() => {})));
+  setVideoStatus("video.status.paused");
+}
+
+function ledBoardsConnected() {
+  return Boolean(ledBoardLeftAdapter?.connected || ledBoardRightAdapter?.connected);
+}
+
+async function sendBillboardCab(cab = lastBillboardPreview, options = {}) {
+  if (!cab || billboardWriteBusy || !ledBoardsConnected()) {
+    return;
+  }
+
+  billboardWriteBusy = true;
+  const errors = [];
+  try {
+    if (ledBoardLeftAdapter?.connected) {
+      try {
+        await ledBoardLeftAdapter.writeColors(cab.left ?? []);
+      } catch (error) {
+        errors.push(`left: ${error?.message || String(error)}`);
+      }
+    }
+    if (ledBoardRightAdapter?.connected) {
+      try {
+        await ledBoardRightAdapter.writeColors(cab.right ?? []);
+      } catch (error) {
+        errors.push(`right: ${error?.message || String(error)}`);
+      }
+    }
+
+    if (errors.length) {
+      setVideoStatus("video.status.error", { message: errors.join(" / ") });
+    } else if (!options.silent) {
+      setVideoStatus("video.status.loaded", { name: "Billboard sent" });
+    }
+  } finally {
+    billboardWriteBusy = false;
+  }
+}
+
 function decodeAirBits(value) {
   return Array.from(
     { length: 6 },
@@ -4268,6 +4425,7 @@ let lightLoopTimer = null;
 let lightLoopBusy = false;
 let bakedPreviewTimer = null;
 let lastBillboardPreview = null;
+let billboardWriteBusy = false;
 let lastLightPayloadKey = "";
 let lastLightSendAt = 0;
 
@@ -4750,7 +4908,10 @@ function startBakedPreviewLoop() {
       stopBakedPreviewLoop();
       return;
     }
-    buildBakedLighting(performance.now());
+    const lighting = buildBakedLighting(performance.now());
+    if (lighting?.cab) {
+      sendBillboardCab(lighting.cab, { silent: true });
+    }
   }, 33);
 }
 
@@ -5030,7 +5191,7 @@ function stopLightLoop() {
 function startLightLoop() {
   stopLightLoop();
   lightLoopTimer = setInterval(async () => {
-    if ((!currentAdapter && !touchSerialAdapter?.connected) || lightLoopBusy) {
+    if ((!currentAdapter && !touchSerialAdapter?.connected && !ledBoardsConnected()) || lightLoopBusy) {
       return;
     }
 
@@ -5065,6 +5226,9 @@ function startLightLoop() {
           lightErrors.push(error?.message || String(error));
         }
       }
+      if (lighting.cab) {
+        await sendBillboardCab(lighting.cab, { silent: true });
+      }
       lastLightPayloadKey = payloadKey;
       lastLightSendAt = now;
       if (lightErrors.length && !touchSerialAdapter?.connected) {
@@ -5081,7 +5245,7 @@ function startLightLoop() {
 }
 
 function sendLights(mode) {
-  if (!currentAdapter && !touchSerialAdapter?.connected) {
+  if (!currentAdapter && !touchSerialAdapter?.connected && !ledBoardsConnected()) {
     setLightStatusKey("light.connectFirst");
     return;
   }
@@ -5600,6 +5764,40 @@ function bindActions() {
     playBundledBadAppleDemo();
   });
 
+  ui.connectLedBoardLeft?.addEventListener("click", async () => {
+    try {
+      await connectLedBoard("left");
+    } catch (error) {
+      setVideoStatus("video.status.error", { message: error.message || String(error) });
+    }
+  });
+
+  ui.connectLedBoardRight?.addEventListener("click", async () => {
+    try {
+      await connectLedBoard("right");
+    } catch (error) {
+      setVideoStatus("video.status.error", { message: error.message || String(error) });
+    }
+  });
+
+  ui.disconnectLedBoards?.addEventListener("click", async () => {
+    await disconnectLedBoards();
+  });
+
+  ui.sendBillboard?.addEventListener("click", async () => {
+    if (!lastBillboardPreview) {
+      drawBillboardPreview({
+        left: Array.from({ length: 66 }, () => ({ r: 0, g: 0, b: 0 })),
+        right: Array.from({ length: 66 }, () => ({ r: 0, g: 0, b: 0 })),
+      });
+    }
+    if (!ledBoardsConnected()) {
+      setVideoStatus("video.status.error", { message: "Connect LED board COM first" });
+      return;
+    }
+    await sendBillboardCab(lastBillboardPreview);
+  });
+
   ui.videoPlay.addEventListener("click", async () => {
     stopBakedPreviewLoop();
     if (!ui.videoPreview.src) {
@@ -5619,11 +5817,14 @@ function bindActions() {
 
   ui.videoPause.addEventListener("click", () => {
     if (ui.videoPreview.paused && ui.videoPreview.src) {
-      ui.videoPreview.play().then(() => {
-        if (ui.demoAudio?.src) {
-          ui.demoAudio.currentTime = ui.videoPreview.currentTime;
-          ui.demoAudio.play().catch(() => {});
-        }
+      const audioPlay = ui.demoAudio?.src
+        ? (() => {
+            ui.demoAudio.currentTime = ui.videoPreview.currentTime;
+            return ui.demoAudio.play();
+          })()
+        : Promise.resolve();
+      const videoPlay = ui.videoPreview.play();
+      Promise.all([videoPlay, audioPlay]).then(() => {
         if (state.bakedLedFrames) {
           state.bakedLedStartedAt = performance.now() - ui.videoPreview.currentTime * 1000;
           state.lightMode = "baked";
