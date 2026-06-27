@@ -4426,6 +4426,7 @@ let lightLoopBusy = false;
 let bakedPreviewTimer = null;
 let lastBillboardPreview = null;
 let billboardWriteBusy = false;
+let demoMediaPlayInProgress = false;
 let lastLightPayloadKey = "";
 let lastLightSendAt = 0;
 
@@ -5080,9 +5081,30 @@ async function playBundledVideo(videoUrl, audioUrl = "") {
   if (ui.demoAudio && audioUrl) {
     ui.demoAudio.load();
   }
-  const videoPlay = ui.videoPreview.play();
-  const audioPlay = ui.demoAudio && audioUrl ? ui.demoAudio.play() : Promise.resolve();
-  await Promise.all([videoPlay, audioPlay]);
+  await playVideoWithDemoAudio();
+}
+
+async function playVideoWithDemoAudio() {
+  demoMediaPlayInProgress = true;
+  try {
+    const plays = [ui.videoPreview.play()];
+
+    if (ui.demoAudio?.src) {
+      ui.videoPreview.muted = true;
+      ui.demoAudio.muted = false;
+      ui.demoAudio.volume = 1;
+      ui.demoAudio.currentTime = ui.videoPreview.currentTime;
+      plays.push(ui.demoAudio.play());
+    }
+
+    const results = await Promise.allSettled(plays);
+    const rejected = results.find((result) => result.status === "rejected");
+    if (rejected) {
+      throw rejected.reason;
+    }
+  } finally {
+    demoMediaPlayInProgress = false;
+  }
 }
 
 function sliderLedIsActive(index) {
@@ -5806,7 +5828,7 @@ function bindActions() {
     }
 
     try {
-      await ui.videoPreview.play();
+      await playVideoWithDemoAudio();
       setPauseButtonPaused(false);
       setVideoStatus("video.status.playing");
       sendLights("video");
@@ -5817,14 +5839,7 @@ function bindActions() {
 
   ui.videoPause.addEventListener("click", () => {
     if (ui.videoPreview.paused && ui.videoPreview.src) {
-      const audioPlay = ui.demoAudio?.src
-        ? (() => {
-            ui.demoAudio.currentTime = ui.videoPreview.currentTime;
-            return ui.demoAudio.play();
-          })()
-        : Promise.resolve();
-      const videoPlay = ui.videoPreview.play();
-      Promise.all([videoPlay, audioPlay]).then(() => {
+      playVideoWithDemoAudio().then(() => {
         if (state.bakedLedFrames) {
           state.bakedLedStartedAt = performance.now() - ui.videoPreview.currentTime * 1000;
           state.lightMode = "baked";
@@ -5859,6 +5874,9 @@ function bindActions() {
 
   ui.videoPreview.addEventListener("play", () => {
     setPauseButtonPaused(false);
+    if (demoMediaPlayInProgress) {
+      return;
+    }
     if (ui.demoAudio?.src && ui.demoAudio.paused) {
       ui.demoAudio.currentTime = ui.videoPreview.currentTime;
       ui.demoAudio.play().catch(() => {});
